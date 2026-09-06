@@ -70,6 +70,7 @@ class ResumeAnalysisState(TypedDict):
     improvements: List[str]
     preparation: List[str]
     score: int
+    keywords: list[dict]
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -377,6 +378,70 @@ def _parse_llm_output(raw: str, parser: PydanticOutputParser, model_cls):
         return model_cls.model_construct(score=0, gaps=[], improvements=[], preparation=[])
 
 
+def extract_jd_keywords(jd_text: str, resume_text: str) -> list[dict]:
+    """Extract skills/tools/technologies from JD and check if present in resume."""
+    keywords_found = []
+    seen = set()
+    
+    categories = {
+        'skill': [
+            'Python', 'Java', 'JavaScript', 'TypeScript', 'C++', 'C#', 'Go', 'Rust', 'Ruby', 'Kotlin', 'Swift', 'Scala', 'R', 'MATLAB', 'SQL',
+            'TensorFlow', 'PyTorch', 'scikit-learn', 'Pandas', 'NumPy', 'LangChain', 'LangGraph', 'Ollama', 'OpenAI', 'Hugging Face', 'FAISS', 'Pinecone', 'ChromaDB', 'Weaviate', 'RAG', 'LLM', 'NLP'
+        ],
+        'tool': [
+            'React', 'Angular', 'Vue', 'Django', 'Flask', 'FastAPI', 'Spring', 'Express', 'Node.js', 'Next.js',
+            'AWS', 'GCP', 'Azure', 'Docker', 'Kubernetes', 'Terraform',
+            'PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'Elasticsearch', 'DynamoDB',
+            'Git', 'Jenkins', 'GitHub Actions', 'CI/CD', 'Jira'
+        ],
+        'certification': [
+            'AWS Certified', 'PMP', 'Scrum'
+        ]
+    }
+    
+    jd_lower = jd_text.lower()
+    resume_lower = resume_text.lower()
+    
+    for category, terms in categories.items():
+        for term in terms:
+            term_lower = term.lower()
+            pattern = r'(?<!\w)' + re.escape(term_lower) + r'(?!\w)'
+            if re.search(pattern, jd_lower):
+                if term_lower not in seen:
+                    found = bool(re.search(pattern, resume_lower))
+                    keywords_found.append({
+                        'keyword': term,
+                        'found_in_resume': found,
+                        'category': category
+                    })
+                    seen.add(term_lower)
+    
+    ner_patterns = [
+        r'experience with\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)',
+        r'proficiency in\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)',
+        r'knowledge of\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)',
+        r'familiarity with\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)',
+        r'expertise in\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)'
+    ]
+    
+    for pattern in ner_patterns:
+        for match in re.finditer(pattern, jd_text):
+            phrase = match.group(1).strip()
+            if phrase:
+                term_lower = phrase.lower()
+                if term_lower not in seen and len(phrase) > 1:
+                    pattern_search = r'(?<!\w)' + re.escape(term_lower) + r'(?!\w)'
+                    found = bool(re.search(pattern_search, resume_lower))
+                    keywords_found.append({
+                        'keyword': phrase,
+                        'found_in_resume': found,
+                        'category': 'skill'
+                    })
+                    seen.add(term_lower)
+                    
+    return keywords_found[:20]
+
+
 # ── Node 1: PDF extraction + multi-query RAG retrieval ───────────────────────
 
 
@@ -454,6 +519,8 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
     resume_context = "\n\n".join(state["retrieved_chunks"][:5])
     jd = state["job_description"]
 
+    keywords = extract_jd_keywords(jd, resume_context)
+
     prompt = (
         "You are a senior technical recruiter and career coach.\n"
         "Analyse this resume against the job description. Return ONLY valid JSON — no markdown, no explanation.\n\n"
@@ -517,6 +584,7 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
         "gaps": gaps,
         "improvements": improvements,
         "preparation": preparation,
+        "keywords": keywords,
     }
 
 

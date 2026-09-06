@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # ── Server ────────────────────────────────────────────────────────────
     graph_timeout_seconds: int = 300
     cors_origins: list[str] = ["*"]
+    max_concurrent_analyses: int = 3
+
+    # ── History ───────────────────────────────────────────────────────────
+    history_db_path: str = "data/history.db"
 
 
 # Module-level singleton — import this everywhere instead of re-instantiating.
