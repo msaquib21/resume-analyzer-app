@@ -35,7 +35,12 @@ from langgraph.graph import END, StateGraph
 
 from .config import settings
 from .models import GapAnalysisOutput, ScoreCoachOutput
-from .rag import load_and_chunk_pdf, retrieve_relevant_chunks
+from .rag import (
+    extract_layout_aware_text,
+    is_single_page_resume,
+    load_and_chunk_pdf,
+    retrieve_relevant_chunks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +84,8 @@ SYSTEM_PROMPT = """\
 You are a meticulous Generative AI engineer and technical recruiter hybrid.
 
 You are a strict text-matcher. Base gaps ONLY on the provided job description text. Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written.
+If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap.
+Never recommend a resume improvement or bullet point that is already visibly present in the candidate's uploaded resume text.
 
 Operate exclusively on the provided resume context and job description. Forbid prior-knowledge bias.
 Your output must be a single, valid JSON object matching the schema requested.
@@ -89,26 +96,48 @@ Scoring rubric (integer 0–10):
   3-5   Partial: multiple significant gaps or weak/unclear evidence.
   0-2   Largely misaligned or missing relevant technical evidence.
 
-Gaps       → specific skills/tools/experience categories tied strictly to the JD.
-Improvements → concrete resume bullet rewrites or additions that close each gap.
-Preparation  → interview study topics, each aligned to a specific gap.
+Gaps         → specific skills/tools/experience categories tied strictly to the JD (empty if candidate meets all requirements).
+Improvements → concrete resume bullet rewrites or additions that close each genuine gap.
+Preparation  → interview study topics, each aligned to a specific genuine gap.
 """
 
 
-# ── LLM factory ──────────────────────────────────────────────────────────────
+# ── LLM factory (Dual Provider: Ollama vs. Groq) ──────────────────────────────
 
 
-def _build_ollama(model: str, temperature: float = 0.0) -> Ollama:
-    """Instantiate a local Ollama-backed LLM with JSON output mode and strict 0.0 temperature."""
-    return Ollama(
-        model=model,
-        temperature=0.0,  # Hardcoded to 0.0 to eliminate creative drift
-        base_url=settings.ollama_base_url,
-        format="json",
-        num_ctx=4096,     # Expanded context window for comprehensive RAG chunks + JD
-        num_predict=800,
-        keep_alive="15m",
-    )
+def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
+    """Instantiate configured LLM provider: local Ollama or Groq Cloud API.
+
+    - If settings.llm_provider == "groq": ChatGroq(model="llama-3.1-8b-instant", temperature=0.0)
+    - If settings.llm_provider == "ollama": Ollama(model=settings.ollama_model, temperature=0.0)
+    """
+    provider = getattr(settings, "llm_provider", "ollama").lower()
+    if provider == "groq":
+        from langchain_groq import ChatGroq
+        groq_model = getattr(settings, "groq_model", "llama-3.1-8b-instant")
+        logger.info("Instantiating Groq LLM provider: model=%s", groq_model)
+        return ChatGroq(
+            model=groq_model,
+            temperature=0.0,
+            groq_api_key=settings.groq_api_key,
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+    else:
+        target_model = model or settings.ollama_model
+        logger.info("Instantiating local Ollama LLM provider: model=%s", target_model)
+        return Ollama(
+            model=target_model,
+            temperature=0.0,  # Hardcoded to 0.0 to eliminate creative drift
+            base_url=settings.ollama_base_url,
+            format="json",
+            num_ctx=4096,     # Expanded context window for comprehensive RAG chunks + JD
+            num_predict=800,
+            keep_alive="15m",
+        )
+
+
+# Backwards compatibility alias
+_build_ollama = _build_llm
 
 
 # ── JSON fence stripper ───────────────────────────────────────────────────────
@@ -406,54 +435,75 @@ def extract_jd_keywords(jd_text: str, resume_text: str) -> list[dict]:
     
     for category, terms in categories.items():
         for term in terms:
-            term_lower = term.lower()
-            pattern = r'(?<!\w)' + re.escape(term_lower) + r'(?!\w)'
-            if re.search(pattern, jd_lower):
+            # Robust symbol-aware boundary matcher for C++, C#, .NET, Node.js, etc.
+            pattern = r"(?i)(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])"
+            if re.search(pattern, jd_text):
+                term_lower = term.lower()
                 if term_lower not in seen:
-                    found = bool(re.search(pattern, resume_lower))
+                    found = bool(re.search(pattern, resume_text))
                     keywords_found.append({
-                        'keyword': term,
-                        'found_in_resume': found,
-                        'category': category
+                        "keyword": term,
+                        "found_in_resume": found,
+                        "category": category,
                     })
                     seen.add(term_lower)
-    
+
     ner_patterns = [
-        r'experience with\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)',
-        r'proficiency in\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)',
-        r'knowledge of\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)',
-        r'familiarity with\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)',
-        r'expertise in\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)'
+        r"experience with\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
+        r"proficiency in\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
+        r"knowledge of\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
+        r"familiarity with\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
+        r"expertise in\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
     ]
-    
+
     for pattern in ner_patterns:
         for match in re.finditer(pattern, jd_text):
             phrase = match.group(1).strip()
             if phrase:
                 term_lower = phrase.lower()
                 if term_lower not in seen and len(phrase) > 1:
-                    pattern_search = r'(?<!\w)' + re.escape(term_lower) + r'(?!\w)'
-                    found = bool(re.search(pattern_search, resume_lower))
+                    pattern_search = r"(?i)(?<![A-Za-z])" + re.escape(phrase) + r"(?![A-Za-z])"
+                    found = bool(re.search(pattern_search, resume_text))
                     keywords_found.append({
-                        'keyword': phrase,
-                        'found_in_resume': found,
-                        'category': 'skill'
+                        "keyword": phrase,
+                        "found_in_resume": found,
+                        "category": "skill",
                     })
                     seen.add(term_lower)
-                    
+
     return keywords_found[:20]
 
 
 # ── Node 1: PDF extraction + multi-query RAG retrieval ───────────────────────
 
 
+# ── Node 1: PDF extraction + multi-query RAG retrieval ───────────────────────
+
+
 def node_extract_and_retrieve(state: ResumeAnalysisState) -> dict:
-    """Parse resume PDF and retrieve relevant chunks via multi-query RAG."""
+    """Parse resume PDF, evaluate length, and retrieve context (bypassing RAG for single-page documents)."""
     callback: ProgressCallback = state.get("progress_callback")
     if callback:
-        callback("extracting", "Parsing PDF and building embeddings…")
+        callback("extracting", "Parsing PDF layout and evaluating document length…")
 
     t0 = time.perf_counter()
+    full_text = extract_layout_aware_text(state["resume_pdf_bytes"])
+    word_count = len(full_text.split())
+
+    # Module 2: RAG Bypass for Single-Page Resumes (< 1,000 words)
+    if is_single_page_resume(full_text, max_words=1000):
+        logger.info(
+            "Node 1 — Single-page resume detected (%d words < 1000): Bypassing ChromaDB retrieval to preserve complete context.",
+            word_count,
+        )
+        if callback:
+            callback("retrieved", f"Single-page resume ({word_count} words): Full context preserved (RAG bypassed)")
+        return {
+            "resume_chunks": [full_text],
+            "retrieved_chunks": [full_text],
+        }
+
+    # Multi-page resumes: section-aware chunking + hybrid retrieval
     resume_chunks = load_and_chunk_pdf(state["resume_pdf_bytes"])
     logger.info("Node 1 — PDF chunked: %d chunks (%.2fs)", len(resume_chunks), time.perf_counter() - t0)
 
@@ -466,14 +516,14 @@ def node_extract_and_retrieve(state: ResumeAnalysisState) -> dict:
         resume_pdf_bytes=state["resume_pdf_bytes"],
     )
     logger.info(
-        "Node 1 — RAG complete: %d chunks retrieved via %d queries (%.2fs)",
+        "Node 1 — Hybrid RAG complete: %d chunks retrieved via %d queries (%.2fs)",
         len(context.retrieved_chunks),
         context.query_count,
         time.perf_counter() - t1,
     )
 
     if callback:
-        callback("retrieved", f"Retrieved {len(context.retrieved_chunks)} relevant chunks via {context.query_count}-query RAG")
+        callback("retrieved", f"Retrieved {len(context.retrieved_chunks)} relevant chunks via {context.query_count}-query Hybrid RAG")
 
     return {
         "resume_chunks": resume_chunks,
@@ -488,7 +538,9 @@ You are a strict text-matcher. Base gaps ONLY on the provided job description te
 
 Compare the provided RESUME CONTEXT against the JOB DESCRIPTION.
 Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.
-If a skill or tool is explicitly present in the candidate's resume, IT IS NOT A GAP.
+1. If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap.
+2. Never recommend a resume improvement or bullet point that is already visibly present in the candidate's uploaded resume text.
+3. Do not force a static count of 3 gaps. If the candidate satisfies the requirements, return an empty list.
 """
 
 
@@ -514,7 +566,7 @@ def node_gap_analysis(state: ResumeAnalysisState) -> dict:
 def node_score_coach(state: ResumeAnalysisState) -> dict:
     """Single consolidated LLM call: gap identification + scoring + improvements + prep.
 
-    Enforces strict grounding and forbids prior-knowledge bias.
+    Enforces strict grounding, forbids prior-knowledge bias, and eliminates the forced 3 gaps trap.
     """
     callback: ProgressCallback = state.get("progress_callback")
     if callback:
@@ -522,8 +574,8 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
 
     parser = PydanticOutputParser(pydantic_object=ScoreCoachOutput)
     format_instructions = parser.get_format_instructions()
-    # Hardcode temperature to 0.0 to eliminate creative drift and hallucination
-    llm = _build_ollama(state["ollama_model_name"], temperature=0.0)
+    # Support Dual Provider (local Ollama or Groq Cloud API)
+    llm = _build_llm(state.get("ollama_model_name"), temperature=0.0)
 
     # Provide comprehensive context of up to 10 top-ranked retrieved chunks
     resume_context = "\n\n".join(state["retrieved_chunks"][:10])
@@ -540,39 +592,36 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
         f"{strict_matcher_rule}\n\n"
         "STRICT GROUNDING INSTRUCTIONS:\n"
         "1. Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.\n"
-        "2. Read the candidate's RESUME CONTEXT carefully. If a required skill or tool (e.g., 'Redis', 'OCI', 'Docker', 'FastAPI', 'Python') "
+        "2. If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap.\n"
+        "3. Never recommend a resume improvement or bullet point that is already visibly present in the candidate's uploaded resume text.\n"
+        "4. Read the candidate's RESUME CONTEXT carefully. If a required skill or tool (e.g., 'Redis', 'OCI', 'Docker', 'FastAPI', 'Python', 'C++', 'C#') "
         "is explicitly present in the resume text, IT IS NOT A GAP. Do NOT claim the candidate lacks something they explicitly have.\n"
-        "3. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
-        "4. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n\n"
+        "5. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
+        "6. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n"
+        "7. Do NOT force a static count of 3 gaps, improvements, or preparation steps. If the candidate is a strong fit, return fewer or empty lists [].\n\n"
         "JOB DESCRIPTION:\n"
         f"{jd}\n\n"
         "RESUME CONTEXT (retrieved sections):\n"
         f"{resume_context}\n\n"
         f"{format_instructions}\n\n"
-        "OUTPUT SCHEMA EXAMPLE (Return ONLY valid JSON matching this exact structure):\n"
+        "OUTPUT SCHEMA EXAMPLE (Return ONLY valid JSON matching this structure):\n"
         "{\n"
-        '  "score": 7,\n'
+        '  "score": 8,\n'
         '  "gaps": [\n'
-        '    "Missing JD Requirement: The resume lacks evidence for a specific tool or skill required by the JD. The JD explicitly states: <Quote exact requirement from JD>. Impact: <Why this impacts the role>.",\n'
-        '    "Unaddressed Core Responsibility: The candidate lacks depth in a core JD responsibility. The JD explicitly demands: <Quote exact requirement from JD>. Impact: <Why this impacts the role>.",\n'
-        '    "Technical Qualification Gap: The resume does not demonstrate a technical qualification written in the JD. The JD demands: <Quote exact requirement from JD>. Impact: <Why this impacts the role>."\n'
+        '    "Missing JD Requirement: The resume lacks evidence for <Explicit Skill from JD>. The JD explicitly states: <Quote exact requirement from JD>."\n'
         "  ],\n"
         '  "improvements": [\n'
-        '    "Target Area: Experience Section | Action Required: Add an explicit bullet point demonstrating how you implemented <Missing Skill 1> with measurable production impact. | JD Alignment: Directly satisfies the explicit JD requirement for <Missing Skill 1>.",\n'
-        '    "Target Area: Projects Section | Action Required: Feature an end-to-end project applying <Missing Skill 2> to solve a practical problem. | JD Alignment: Fulfills the job description\'s requirement for <Missing Skill 2>.",\n'
-        '    "Target Area: Technical Skills | Action Required: Explicitly feature <Missing Skill 3> in your technical skills overview. | JD Alignment: Aligns with the core tooling required by this job description."\n'
+        '    "Target Area: Experience Section | Action Required: Add an explicit bullet point demonstrating how you implemented <Missing Skill> with measurable production impact. | JD Alignment: Directly satisfies the explicit JD requirement for <Missing Skill>."\n'
         "  ],\n"
         '  "preparation": [\n'
-        '    "Target Gap: <Missing Skill 1> | Study: Key official documentation and best practices for <Missing Skill 1> | Practice: Build a reference demo implementing <Missing Skill 1> | Interview Angle: How do you address common production challenges in <Missing Skill 1>?",\n'
-        '    "Target Gap: <Missing Skill 2> | Study: Architectural design patterns for <Missing Skill 2> | Practice: Execute an end-to-end integration using <Missing Skill 2> | Interview Angle: What tradeoffs do you evaluate when deploying <Missing Skill 2>?",\n'
-        '    "Target Gap: <Missing Skill 3> | Study: Core concepts and industry standards for <Missing Skill 3> | Practice: Re-implement a sample scenario testing <Missing Skill 3> | Interview Angle: Walk me through your hands-on experience with <Missing Skill 3>."\n'
+        '    "Target Gap: <Missing Skill> | Study: Key official documentation and best practices for <Missing Skill> | Practice: Build a reference demo implementing <Missing Skill> | Interview Angle: How do you address common production challenges in <Missing Skill>?"\n'
         "  ]\n"
         "}\n\n"
         "RULES:\n"
         "- score: integer (0-10) based strictly on the percentage of explicit JD requirements evidenced in the resume context.\n"
-        "- gaps: up to 3 strings (or fewer if candidate is a strong fit). Each gap MUST cite a requirement explicitly written in the JD.\n"
-        "- improvements: exactly 3 strings giving actionable resume modification advice (`Add...`, `Highlight...`, `Quantify...`) tailored to this JD. Format: 'Target Area: NAME | Action Required: DIRECTIVE | JD Alignment: EXPLANATION'.\n"
-        "- preparation: exactly 3 strings. Format: 'Target Gap: NAME | Study: RESOURCE | Practice: PROJECT | Interview Angle: QUESTION'.\n"
+        "- gaps: list of strings (can be empty [] if the candidate meets all requirements). Each gap MUST cite a requirement explicitly written in the JD. If a skill is already present in the resume, DO NOT flag it.\n"
+        "- improvements: list of actionable resume modification advice addressing genuine missing requirements (can be empty []). Format: 'Target Area: NAME | Action Required: DIRECTIVE | JD Alignment: EXPLANATION'. Never recommend anything already present in the resume.\n"
+        "- preparation: list of interview study topics addressing genuine gaps (can be empty []). Format: 'Target Gap: NAME | Study: RESOURCE | Practice: PROJECT | Interview Angle: QUESTION'.\n"
         "- Return ONLY valid JSON. No markdown fences. Zero hallucinations."
     )
 

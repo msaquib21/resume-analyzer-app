@@ -19,7 +19,8 @@ class GapAnalysisOutput(BaseModel):
     gaps: list[str] = Field(
         default_factory=list,
         description=(
-            "List of specific, actionable skill or experience gaps. "
+            "Optional list of specific, actionable skill or experience gaps (empty if candidate meets all requirements). "
+            "If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap. "
             "You are a strict text-matcher. Base gaps ONLY on the provided job description text. "
             "Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written."
         ),
@@ -38,18 +39,24 @@ class ScoreCoachOutput(BaseModel):
     gaps: list[str] = Field(
         default_factory=list,
         description=(
-            "Refined list of skill/experience gaps tied strictly to the JD. "
+            "Optional list of skill/experience gaps tied strictly to the JD (empty if candidate meets all requirements). "
+            "If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap. "
             "You are a strict text-matcher. Base gaps ONLY on the provided job description text. "
             "Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written."
         ),
     )
     improvements: list[str] = Field(
         default_factory=list,
-        description="Concrete resume bullet rewrites or additions addressing each gap.",
+        description=(
+            "Optional list of concrete resume bullet rewrites or additions addressing each identified gap. "
+            "Never recommend a resume improvement or bullet point that is already visibly present in the candidate's uploaded resume text."
+        ),
     )
     preparation: list[str] = Field(
         default_factory=list,
-        description="Specific interview study topics aligned strictly to the job description gaps and weaknesses.",
+        description=(
+            "Optional list of specific interview study topics aligned strictly to the identified job description gaps and weaknesses."
+        ),
     )
 
 
@@ -141,7 +148,9 @@ class HealthResponse(BaseModel):
     """Response body for ``GET /health``."""
 
     status: str = Field(description="'ok' if all services are reachable.")
+    llm_provider: str = Field(default="ollama", description="Active LLM provider ('ollama' or 'groq').")
     ollama_reachable: bool = Field(description="Whether the Ollama API responded.")
+    groq_configured: bool = Field(default=False, description="Whether Groq API is configured with an API key.")
     model: str = Field(description="Configured LLM model name.")
     embeddings_model: str = Field(description="Configured embeddings model name.")
     available_models: list[str] = Field(

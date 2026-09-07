@@ -39,12 +39,22 @@
 
 ## 🎯 Overview
 
-**Agentic Resume Analyzer** is a full-stack AI application that uses a **multi-step LangGraph agentic pipeline** to intelligently compare a candidate's resume against a target job description. Unlike simple keyword matchers, it uses **local LLM inference** (via [Ollama](https://ollama.com/)) combined with **Retrieval-Augmented Generation (RAG)** to provide deep, contextual analysis — all running entirely on your own machine with **zero cloud dependencies or API costs**.
+**Agentic Resume Analyzer** is a production-grade AI application powered by a **multi-node LangGraph agentic pipeline** to rigorously compare a candidate's resume against a target job description. It features a **Dual-LLM Provider Architecture**:
+- **Local Privacy Mode (Default)**: Runs 100% locally on [Ollama](https://ollama.com/) (`qwen3.5:9b` / `qwen2.5:3b`) with zero cloud telemetry and no API keys required.
+- **Cloud Portfolio Mode**: Connects seamlessly to the free [Groq Cloud API](https://groq.com/) (`llama-3.1-8b-instant`) for instant zero-cost public deployments on Render, Railway, or Vercel.
+
+### Architectural Highlights
+- **Dual LLM Provider Pattern**: Switch between local Ollama and Groq cloud API with a single environment variable (`LLM_PROVIDER=ollama` or `LLM_PROVIDER=groq`).
+- **Single-Page Resume RAG Bypass**: Resumes under 1,000 words (~1 page) bypass chunking and vector search to be evaluated as a single cohesive unit, eliminating context loss.
+- **Section-Aware PDF Parsing**: Multi-column regex header detection preserves dense technical skill lists intact without mid-phrase fracturing.
+- **Hybrid Search**: Fuses ChromaDB dense vector embeddings with `rank-bm25` sparse lexical retrieval via weighted Reciprocal Rank Fusion (RRF).
+- **Symbol-Aware ATS Keyword Matcher**: Token boundaries accurately identify programming languages with symbols like `C++`, `C#`, `.NET`, `Node.js`, and `React.js`.
+- **Zero-Hallucination Anti-Trap Grounding**: Eliminates the "forced 3 gaps" trap. If a candidate satisfies a requirement or has an existing bullet point, it is never falsely flagged as a gap.
 
 The system produces five key deliverables displayed across a polished dark-themed Streamlit UI:
 1. **Match Score (0–10)** — Calibrated against the JD's actual requirements with animated SVG ring
 2. **JD Keyword Heatmap** — Visual grid showing which JD keywords exist in your resume vs. which are missing
-3. **Identified Skill Gaps** — Specific skills missing from the resume with JD evidence and confidence levels
+3. **Identified Skill Gaps** — Specific skills missing from the resume with JD evidence (dynamic count, empty if perfect fit)
 4. **Actionable Resume Improvements** — Precise directives telling you *what to add/change* in your resume
 5. **Interview Preparation Roadmap** — Study resources, hands-on projects, and mock interview questions
 
@@ -298,16 +308,23 @@ All settings via environment variables or `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
+| `LLM_PROVIDER` | `ollama` | Active provider: `ollama` (local) or `groq` (cloud) |
+| `GROQ_API_KEY` | `None` | API key for free Groq Cloud API (`gsk_...`) |
+| `GROQ_MODEL` | `llama-3.1-8b-instant` | Groq cloud LLM model name |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `qwen2.5:3b` | LLM model tag |
-| `OLLAMA_TEMPERATURE` | `0.0` | Generation temperature |
-| `EMBEDDINGS_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
-| `CHUNK_SIZE` | `500` | PDF text chunk size |
-| `RETRIEVAL_K` | `6` | Chunks per query |
-| `RETRIEVAL_QUERIES` | `3` | Multi-query RAG queries |
+| `OLLAMA_MODEL` | `qwen2.5:3b` | Local Ollama model tag (`qwen3.5:9b`, `qwen2.5:7b`, etc.) |
+| `OLLAMA_TEMPERATURE` | `0.0` | Strictly 0.0 to prevent hallucination |
+| `EMBEDDINGS_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Dense embedding model |
+| `BM25_WEIGHT` | `0.5` | Weight for BM25 sparse keyword rank fusion |
+| `CHUNK_SIZE` | `600` | Section-aware PDF text chunk size |
+| `CHUNK_OVERLAP` | `120` | 20% chunk overlap preserved across splits |
+| `RETRIEVAL_K` | `10` | Chunks retrieved per query |
+| `RETRIEVAL_QUERIES` | `4` | Multi-query RAG queries |
 | `MAX_CONCURRENT_ANALYSES` | `3` | Rate limit |
 | `HISTORY_DB_PATH` | `data/history.db` | SQLite DB path |
 | `GRAPH_TIMEOUT_SECONDS` | `300` | Pipeline timeout |
+| `LANGCHAIN_TRACING_V2` | `false` | LangSmith production observability |
+| `LANGCHAIN_API_KEY` | `None` | LangSmith tracing API key |
 
 ---
 

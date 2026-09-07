@@ -312,11 +312,24 @@ def make_vector_store(
     return vs
 
 
+# ── Single-Page Resume Word Count Evaluation ──────────────────────────────────
+
+
+def is_single_page_resume(full_text: str, max_words: int = 1000) -> bool:
+    """Evaluate total word count of parsed resume text.
+
+    If the text is under 1,000 words (~1 page), evaluating the whole document
+    avoids context fragmentation and bypasses ChromaDB multi-query retrieval.
+    """
+    words = full_text.split()
+    return len(words) < max_words
+
+
 # ── JD Query Generation ───────────────────────────────────────────────────────
 
 
 def _extract_skill_keywords(job_description: str, k: int = 16) -> List[str]:
-    """Lightweight local keyword extraction — no LLM required."""
+    """Lightweight local keyword extraction with robust symbol-aware matching — no LLM required."""
     STOP_WORDS = {
         "the", "and", "to", "of", "in", "a", "for", "with", "on", "is",
         "are", "as", "an", "or", "will", "be", "you", "our", "at", "by",
@@ -326,13 +339,25 @@ def _extract_skill_keywords(job_description: str, k: int = 16) -> List[str]:
         "knowledge", "years", "proven", "background", "good", "plus",
     }
 
-    words = re.findall(r"[a-z0-9][a-z0-9+.#_\-]{1,}", job_description.lower())
+    # Symbol-aware token matcher capturing C++, C#, .NET, Node.js, React.js and standard words
+    raw_tokens = re.findall(
+        r"(?i)(?<![A-Za-z])(C\+\+|C#|\.NET|Node\.js|React\.js|[A-Za-z0-9+#.]+)(?![A-Za-z])",
+        job_description,
+    )
     freq: Dict[str, int] = {}
-    for w in words:
-        token = w.strip("_-#.")
-        if not token or token in STOP_WORDS or len(token) < 3:
+    for token in raw_tokens:
+        clean = token.strip()
+        # Preserve specific technical symbols even if punctuation
+        if clean.upper() in {"C++", "C#", ".NET"}:
+            norm = clean.upper()
+        elif clean.lower() in {"node.js", "react.js"}:
+            norm = clean.lower()
+        else:
+            norm = clean.strip("_-#.").lower()
+
+        if not norm or norm in STOP_WORDS or len(norm) < 2:
             continue
-        freq[token] = freq.get(token, 0) + 1
+        freq[norm] = freq.get(norm, 0) + 1
 
     ranked = sorted(freq, key=lambda w: (freq[w], len(w)), reverse=True)
     seen: set[str] = set()

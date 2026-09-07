@@ -155,19 +155,27 @@ def _build_keyword_matches(raw_keywords: list) -> list[KeywordMatch]:
     tags=["Meta"],
 )
 async def health() -> HealthResponse:
-    """Check that the server is running and Ollama is reachable."""
+    """Check that the server is running and configured LLM provider is reachable."""
     ollama_ok = False
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(f"{settings.ollama_base_url}/api/tags")
             ollama_ok = r.status_code == 200
     except Exception as exc:
-        logger.warning("Ollama health check failed: %s", exc)
+        logger.debug("Ollama health check failed: %s", exc)
+
+    provider = settings.llm_provider.lower()
+    groq_ready = bool(settings.groq_api_key)
+    is_ready = groq_ready if provider == "groq" else ollama_ok
+
+    active_model = settings.groq_model if provider == "groq" else settings.ollama_model
 
     return HealthResponse(
-        status="ok" if ollama_ok else "degraded",
+        status="ok" if is_ready else "degraded",
+        llm_provider=provider,
         ollama_reachable=ollama_ok,
-        model=settings.ollama_model,
+        groq_configured=groq_ready,
+        model=active_model,
         embeddings_model=settings.embeddings_model,
         available_models=settings.available_models,
     )

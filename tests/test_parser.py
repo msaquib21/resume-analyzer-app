@@ -157,3 +157,82 @@ def test_pydantic_output_parser_strict_grounding_constraint():
     score_instructions = score_parser.get_format_instructions()
     assert expected_constraint in score_instructions
 
+
+def test_is_single_page_resume_bypass():
+    """Documents under 1,000 words must trigger the single-page RAG bypass."""
+    from backend.rag import is_single_page_resume
+
+    short_text = "Experienced software engineer with Python and Docker skills. " * 30  # ~240 words
+    long_text = "Experienced software engineer with Python and Docker skills. " * 200  # ~1600 words
+
+    assert is_single_page_resume(short_text, max_words=1000) is True
+    assert is_single_page_resume(long_text, max_words=1000) is False
+
+
+def test_extract_keywords_technical_symbols():
+    """ATS keyword extraction must accurately match C++, C#, .NET, Node.js without regex boundary breakage."""
+    from backend.rag import _extract_skill_keywords
+    from backend.agent import extract_jd_keywords
+
+    jd_sample = "Looking for a Senior Software Engineer proficient in C++, C#, .NET, and Node.js with React.js experience."
+    resume_sample = "Software Engineer with 4 years hands-on experience in C++ and .NET microservices. Also built Node.js backends."
+
+    # 1. RAG query keywords
+    rag_keywords = _extract_skill_keywords(jd_sample)
+    assert any("C++" in kw.upper() for kw in rag_keywords)
+    assert any("C#" in kw.upper() for kw in rag_keywords)
+    assert any(".NET" in kw.upper() for kw in rag_keywords)
+
+    # 2. Agent keyword matcher
+    agent_keywords = extract_jd_keywords(jd_sample, resume_sample)
+    kw_names = {k["keyword"] for k in agent_keywords}
+    assert "C++" in kw_names
+    assert "C#" in kw_names
+
+    cpp_entry = next(k for k in agent_keywords if k["keyword"] == "C++")
+    assert cpp_entry["found_in_resume"] is True
+
+    csharp_entry = next(k for k in agent_keywords if k["keyword"] == "C#")
+    assert csharp_entry["found_in_resume"] is False
+
+
+def test_models_flexible_gap_count():
+    """Schemas must not force a static count of 3 items — empty lists must be valid for strong fits."""
+    from backend.models import GapAnalysisOutput, ScoreCoachOutput
+
+    # Candidate satisfies everything: 0 gaps, 0 improvements, 0 prep
+    gap_output = GapAnalysisOutput(gaps=[])
+    assert gap_output.gaps == []
+
+    perfect_score = ScoreCoachOutput(
+        score=10,
+        gaps=[],
+        improvements=[],
+        preparation=[],
+    )
+    assert perfect_score.score == 10
+    assert perfect_score.gaps == []
+    assert perfect_score.improvements == []
+    assert perfect_score.preparation == []
+
+
+def test_build_llm_dual_provider_selection(monkeypatch):
+    """LLM factory must return ChatGroq when provider is 'groq' and Ollama when 'ollama'."""
+    from backend.config import settings
+    from backend.agent import _build_llm
+    from langchain_groq import ChatGroq
+    from langchain_community.llms import Ollama
+
+    # Test Groq provider
+    monkeypatch.setattr(settings, "llm_provider", "groq")
+    monkeypatch.setattr(settings, "groq_api_key", "gsk_test_mock_key")
+    groq_llm = _build_llm()
+    assert isinstance(groq_llm, ChatGroq)
+    assert groq_llm.model_name == "llama-3.1-8b-instant"
+
+    # Test Ollama provider
+    monkeypatch.setattr(settings, "llm_provider", "ollama")
+    ollama_llm = _build_llm(model="qwen3.5:9b")
+    assert isinstance(ollama_llm, Ollama)
+    assert ollama_llm.model == "qwen3.5:9b"
+

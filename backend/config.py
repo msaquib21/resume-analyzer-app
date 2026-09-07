@@ -23,14 +23,21 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # ── Dual LLM Provider (Local Ollama vs. Groq Cloud API) ───────────────
+    # Set LLM_PROVIDER=groq and GROQ_API_KEY=gsk_... for free cloud deployment on Render/Vercel
+    llm_provider: str = "ollama"       # "ollama" or "groq"
+    groq_api_key: Optional[str] = None
+    groq_model: str = "llama-3.1-8b-instant"
+
     # ── Ollama Model Selection & Targets ──────────────────────────────────
-    # Easily swap model via environment variable OLLAMA_MODEL (e.g. qwen2.5:7b or qwen3:8b)
+    # Easily swap model via environment variable OLLAMA_MODEL (e.g. qwen3.5:9b or qwen2.5:7b)
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:3b"
     available_models: List[str] = [
         "qwen2.5:3b",      # Ultra-fast local execution (default)
+        "qwen3.5:9b",      # Next-gen reasoning with enhanced tool adherence
         "qwen2.5:7b",      # Enhanced reasoning and complex schema adherence
-        "qwen3:8b",        # Next-gen structured instruction-following
+        "qwen3:8b",        # Structured instruction-following
         "llama3.1:8b",     # General open-source reasoning
     ]
     ollama_temperature: float = 0.0
