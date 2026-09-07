@@ -58,13 +58,14 @@ Plus: **Analysis History & Trends** dashboard, **PDF Report Export**, **Feedback
 |---|---|---|
 | **Frontend** | [Streamlit](https://streamlit.io/) `≥1.33` | Interactive multi-page UI with SSE streaming, sidebar navigation |
 | **Backend API** | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) | Async REST API with SSE, rate limiting, history CRUD |
-| **LLM Runtime** | [Ollama](https://ollama.com/) + `qwen2.5:3b` | 100% local LLM inference — no API keys needed |
+| **LLM Runtime** | [Ollama](https://ollama.com/) (`qwen2.5:3b`, `qwen2.5:7b`, `qwen3:8b`, `llama3.1:8b`) | 100% local LLM inference with dynamic model swapping |
 | **Agentic Pipeline** | [LangGraph](https://langchain-ai.github.io/langgraph/) `≥0.1` | Stateful multi-node graph-based agent orchestration |
-| **LLM Integration** | [LangChain](https://python.langchain.com/) / [langchain-community](https://github.com/langchain-ai/langchain) | Ollama LLM wrapper, document loaders, text splitters |
+| **LLM Integration** | [LangChain](https://python.langchain.com/) / [langchain-community](https://github.com/langchain-ai/langchain) | Ollama LLM wrapper, output parsers, BM25 retriever |
 | **Embeddings** | [sentence-transformers](https://www.sbert.net/) `all-MiniLM-L6-v2` | Local semantic embedding (no GPU required) |
 | **Vector Store** | [ChromaDB](https://www.trychroma.com/) | In-memory vector store with persistent LRU caching |
-| **RAG Strategy** | Multi-query + Reciprocal Rank Fusion (RRF) | High-recall retrieval across 3 distinct query angles |
-| **PDF Parsing** | [PyPDF](https://pypdf.readthedocs.io/) | Resume text extraction |
+| **Hybrid Search** | [rank-bm25](https://github.com/dorianbrown/rank_bm25) + ChromaDB | Dense semantic + sparse lexical search fused via weighted RRF |
+| **PDF Parsing** | [PyPDF](https://pypdf.readthedocs.io/) + Section-Aware Parser | Multi-column regex header detection preserving dense skill sections |
+| **Observability** | [LangSmith](https://smith.langchain.com/) | Production-grade tracing via `LANGCHAIN_TRACING_V2` |
 | **PDF Export** | [fpdf2](https://py-pdf.github.io/fpdf2/) | Branded PDF report generation with color-coded sections |
 | **Data Validation** | [Pydantic](https://docs.pydantic.dev/) v2 + [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) | Strict I/O schemas and environment config |
 | **Persistence** | SQLite (built-in) | Analysis history, feedback, score trends |

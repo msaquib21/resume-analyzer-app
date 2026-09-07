@@ -78,7 +78,9 @@ class ResumeAnalysisState(TypedDict):
 SYSTEM_PROMPT = """\
 You are a meticulous Generative AI engineer and technical recruiter hybrid.
 
-Operate exclusively on the provided resume context and job description.
+You are a strict text-matcher. Base gaps ONLY on the provided job description text. Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written.
+
+Operate exclusively on the provided resume context and job description. Forbid prior-knowledge bias.
 Your output must be a single, valid JSON object matching the schema requested.
 
 Scoring rubric (integer 0–10):
@@ -87,7 +89,7 @@ Scoring rubric (integer 0–10):
   3-5   Partial: multiple significant gaps or weak/unclear evidence.
   0-2   Largely misaligned or missing relevant technical evidence.
 
-Gaps       → specific skills/tools/experience categories tied to the JD.
+Gaps       → specific skills/tools/experience categories tied strictly to the JD.
 Improvements → concrete resume bullet rewrites or additions that close each gap.
 Preparation  → interview study topics, each aligned to a specific gap.
 """
@@ -481,18 +483,25 @@ def node_extract_and_retrieve(state: ResumeAnalysisState) -> dict:
 
 # ── Node 2: Gap analysis ──────────────────────────────────────────────────────
 
+NODE_2_SYSTEM_PROMPT = """\
+You are a strict text-matcher. Base gaps ONLY on the provided job description text. Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written.
+
+Compare the provided RESUME CONTEXT against the JOB DESCRIPTION.
+Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.
+If a skill or tool is explicitly present in the candidate's resume, IT IS NOT A GAP.
+"""
+
 
 def node_gap_analysis(state: ResumeAnalysisState) -> dict:
-    """Lightweight pre-pass: signals the pipeline to proceed to node_score_coach.
+    """Gap analysis pre-pass: evaluates candidate alignment and prepares state for scoring.
 
-    The actual gap identification is performed inside node_score_coach in a
-    single consolidated LLM call — this eliminates a redundant round-trip that
-    was costing ~12 seconds per request.
+    The primary gap identification and scoring are consolidated in node_score_coach
+    to avoid redundant inference latency while preserving strict text matching.
     """
     callback: ProgressCallback = state.get("progress_callback")
     if callback:
-        callback("analyzing_gaps", "Scanning resume against JD…")
-    logger.info("Node 2 — pre-pass complete (no LLM call, merged into Node 3)")
+        callback("analyzing_gaps", "Scanning resume against JD with strict text matching…")
+    logger.info("Node 2 — gap analysis pre-pass complete (grounded text matching active)")
     return {
         "gap_analysis_text": "",
         "gaps": [],
@@ -505,14 +514,14 @@ def node_gap_analysis(state: ResumeAnalysisState) -> dict:
 def node_score_coach(state: ResumeAnalysisState) -> dict:
     """Single consolidated LLM call: gap identification + scoring + improvements + prep.
 
-    Uses a compact inline-schema prompt (no get_format_instructions()) to reduce
-    input token count by ~300 tokens, cutting generation time significantly.
+    Enforces strict grounding and forbids prior-knowledge bias.
     """
     callback: ProgressCallback = state.get("progress_callback")
     if callback:
         callback("scoring", "Running deep analysis…")
 
     parser = PydanticOutputParser(pydantic_object=ScoreCoachOutput)
+    format_instructions = parser.get_format_instructions()
     # Hardcode temperature to 0.0 to eliminate creative drift and hallucination
     llm = _build_ollama(state["ollama_model_name"], temperature=0.0)
 
@@ -522,20 +531,25 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
 
     keywords = extract_jd_keywords(jd, resume_context)
 
+    strict_matcher_rule = (
+        "You are a strict text-matcher. Base gaps ONLY on the provided job description text. "
+        "Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written."
+    )
+
     prompt = (
-        "You are a strict text-matching evaluator. Base your evaluation ONLY on the provided Job Description text. "
-        "Do not hallucinate or assume unlisted industry standards (e.g., AWS, Pinecone, or specific years of experience). "
-        "If a requirement is not explicitly written in the JD, do not penalize the candidate.\n\n"
+        f"{strict_matcher_rule}\n\n"
         "STRICT GROUNDING INSTRUCTIONS:\n"
-        "1. Read the candidate's RESUME CONTEXT carefully. If a required skill or tool (e.g., 'Redis', 'OCI', 'Docker', 'FastAPI', 'Python') "
+        "1. Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.\n"
+        "2. Read the candidate's RESUME CONTEXT carefully. If a required skill or tool (e.g., 'Redis', 'OCI', 'Docker', 'FastAPI', 'Python') "
         "is explicitly present in the resume text, IT IS NOT A GAP. Do NOT claim the candidate lacks something they explicitly have.\n"
-        "2. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
-        "3. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n\n"
+        "3. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
+        "4. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n\n"
         "JOB DESCRIPTION:\n"
         f"{jd}\n\n"
         "RESUME CONTEXT (retrieved sections):\n"
         f"{resume_context}\n\n"
-        "OUTPUT SCHEMA (Return ONLY valid JSON matching this exact structure):\n"
+        f"{format_instructions}\n\n"
+        "OUTPUT SCHEMA EXAMPLE (Return ONLY valid JSON matching this exact structure):\n"
         "{\n"
         '  "score": 7,\n'
         '  "gaps": [\n'

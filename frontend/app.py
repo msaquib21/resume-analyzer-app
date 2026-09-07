@@ -753,28 +753,38 @@ with st.sidebar:
 
     st.divider()
 
-    # System Status Indicator
+    # System Status Indicator & Model Selector
     try:
         health = requests.get(f"{BACKEND_URL}/health", timeout=2.5).json()
         status_color = "#00FFA3" if health.get("ollama_reachable") else "#FF4060"
         status_text = "Connected (Ready)" if health.get("ollama_reachable") else "Ollama Offline"
+        models_list = health.get("available_models") or ["qwen2.5:3b", "qwen2.5:7b", "qwen3:8b", "llama3.1:8b"]
+        current_model = health.get("model", "qwen2.5:3b")
+        default_idx = models_list.index(current_model) if current_model in models_list else 0
+
         st.markdown(
             f"""
-            <div style="padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06);">
+            <div style="padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); margin-bottom: 12px;">
               <div style="display:flex; align-items:center; gap:8px;">
                 <div style="width:8px; height:8px; border-radius:50%; background:{status_color}; box-shadow: 0 0 10px {status_color};"></div>
                 <span style="color: #EDF2FF; font-size: 0.82rem; font-weight: 700;">Local AI Engine: {status_text}</span>
               </div>
-              <div style="color: #8899B4; font-size: 0.74rem; margin-top: 6px; font-family: var(--mono);">
-                Model: {health.get("model", "qwen2.5:3b")}
-              </div>
-              <div style="color: #506282; font-size: 0.70rem; margin-top: 4px;">
-                Embeddings: all-MiniLM-L6-v2
+              <div style="color: #506282; font-size: 0.70rem; margin-top: 6px;">
+                Hybrid RAG: ChromaDB + BM25 Sparse
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        selected_model = st.selectbox(
+            "🧠 Select Ollama Model",
+            options=models_list,
+            index=default_idx,
+            help="Swap LLM models easily: qwen2.5:3b (default/fast), qwen2.5:7b, qwen3:8b, or llama3.1:8b",
+            key="ollama_model_select",
+        )
+        st.session_state.selected_model = selected_model
     except Exception:
         st.markdown(
             """
@@ -1028,7 +1038,10 @@ def render_analysis_page():
                 try:
                     resume_bytes = resume_file.getvalue()
                     files = {"resume_pdf": (resume_file.name, resume_bytes, "application/pdf")}
-                    data = {"job_description": active_jd}
+                    data = {
+                        "job_description": active_jd,
+                        "model": st.session_state.get("selected_model", "qwen2.5:3b"),
+                    }
 
                     with requests.post(f"{BACKEND_URL}/analyze/stream", data=data, files=files, stream=True, timeout=420) as resp:
                         resp.raise_for_status()

@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 
 import pypdf
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.retrievers import BM25Retriever
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -133,21 +134,107 @@ def extract_layout_aware_text(pdf_bytes: bytes) -> str:
     return full_resume_text
 
 
+# ── Section-Aware Resume Chunking ─────────────────────────────────────────────
+
+SECTION_HEADER_RE = re.compile(
+    r"(?m)^[ \t]*(?:[#*\-•\d\.\)]+[ \t]*)*("
+    r"(?:TECHNICAL\s+|CORE\s+|KEY\s+)?SKILLS(?:\s*(?:&|AND|\/)\s*(?:EXPERTISE|TECHNOLOGIES|ABILITIES|TOOLS|COMPETENCIES))?|"
+    r"CORE\s+COMPETENCIES|AREAS\s+OF\s+EXPERTISE|TECHNOLOGIES(?:\s*&|\s*AND|\s*\/)?(?:\s*TOOLS)?|"
+    r"(?:WORK\s+|PROFESSIONAL\s+|RELEVANT\s+|EMPLOYMENT\s+)?EXPERIENCE|EMPLOYMENT\s+HISTORY|"
+    r"(?:KEY\s+|FEATURED\s+|SELECTED\s+|PERSONAL\s+|ACADEMIC\s+|TECHNICAL\s+)?PROJECTS|"
+    r"EDUCATION(?:\s*(?:&|AND|\/)\s*(?:TRAINING|ACADEMICS))?|ACADEMIC\s+BACKGROUND|"
+    r"CERTIFICATIONS?|LICENSES?(?:\s*(?:&|AND|\/)\s*CERTIFICATIONS?)?|"
+    r"(?:PROFESSIONAL\s+|CAREER\s+|EXECUTIVE\s+)?(?:SUMMARY|OBJECTIVE|PROFILE)|"
+    r"PUBLICATIONS|AWARDS|ACHIEVEMENTS|HONORS|ACTIVITIES"
+    r")\s*[:\-\u2013\u2014]?[ \t]*(?:\r?\n|$)",
+    re.IGNORECASE,
+)
+
+
+def section_aware_chunk_resume(
+    full_text: str,
+    chunk_size: int = settings.chunk_size,
+    chunk_overlap: int = settings.chunk_overlap,
+) -> List[str]:
+    """Segment resume into logical sections and chunk intelligently without fracturing skills.
+
+    Dense sections (e.g. Skills, Technologies, Certifications) are kept cohesive
+    in single chunks up to 1800 characters so technical terms are never split mid-phrase.
+    Longer narrative sections (Experience, Projects) are split at paragraph and bullet
+    boundaries while prepending the section context header.
+    """
+    text = full_text.strip()
+    if not text:
+        return []
+
+    matches = list(SECTION_HEADER_RE.finditer(text))
+    # Fallback to paragraph splitter if unstructured or fewer than 2 headers detected
+    if len(matches) < 2:
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=["\n\n--- PAGE BREAK ---\n\n", "\n\n", "\n", ". ", " ", ""],
+        )
+        return [c.strip() for c in splitter.split_text(text) if c.strip()]
+
+    sections: List[tuple[str, str]] = []
+    first_start = matches[0].start()
+    if first_start > 0:
+        preamble = text[:first_start].strip()
+        if preamble:
+            sections.append(("Candidate Overview", preamble))
+
+    for i, m in enumerate(matches):
+        header = m.group(1).strip()
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content = text[start:end].strip()
+        if content:
+            sections.append((header, content))
+
+    chunks: List[str] = []
+    dense_keywords = {"skill", "technolog", "competenc", "tool", "certificat"}
+
+    for header, content in sections:
+        norm_header = header.title()
+        is_dense = any(dk in header.lower() for dk in dense_keywords)
+
+        # Dense keyword lists: keep intact to prevent breaking technical phrases
+        if is_dense and len(content) <= 1800:
+            chunks.append(f"[{norm_header}]\n{content}")
+        else:
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                separators=["\n\n", "\n• ", "\n- ", "\n* ", "\n", ". ", " "],
+            )
+            sub_chunks = splitter.split_text(content)
+            for sc in sub_chunks:
+                sc_clean = sc.strip()
+                if sc_clean:
+                    chunks.append(f"[{norm_header}]\n{sc_clean}")
+
+    return chunks
+
+
 def load_and_chunk_pdf(pdf_bytes: bytes) -> List[str]:
-    """Extract text using layout-aware parsing and split into semantically continuous chunks."""
+    """Extract text using layout-aware parsing and split using section-aware chunking."""
     full_text = extract_layout_aware_text(pdf_bytes)
     if not full_text.strip():
         logger.warning("PDF extraction returned empty text.")
         return []
 
-    splitter = RecursiveCharacterTextSplitter(
+    clean_chunks = section_aware_chunk_resume(
+        full_text,
         chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,  # 20% overlap preserved
-        separators=["\n\n--- PAGE BREAK ---\n\n", "\n\n", "\n", ". ", " ", ""],
+        chunk_overlap=settings.chunk_overlap,
     )
-    chunks = splitter.split_text(full_text)
-    clean_chunks = [c.strip() for c in chunks if c.strip()]
-    logger.info("PDF chunked: %d chunks (chunk_size=%d, overlap=%d)", len(clean_chunks), settings.chunk_size, settings.chunk_overlap)
+    logger.info(
+        "PDF section-chunked: %d chunks (chunk_size=%d, overlap=%d)",
+        len(clean_chunks),
+        settings.chunk_size,
+        settings.chunk_overlap,
+    )
     return clean_chunks
 
 
@@ -287,13 +374,20 @@ def _build_retrieval_queries(job_description: str, n_queries: int = 4) -> List[s
 
 
 def _reciprocal_rank_fusion(
-    ranked_lists: List[List[str]], k: int = 60
+    ranked_lists: List[List[str]],
+    k: int = 60,
+    weights: Optional[List[float]] = None,
 ) -> List[str]:
-    """Merge multiple ranked result lists using Reciprocal Rank Fusion (RRF)."""
+    """Merge multiple ranked result lists using Reciprocal Rank Fusion (RRF).
+
+    Supports optional weighting per ranked list to calibrate dense vector
+    and sparse lexical (BM25) search contributions.
+    """
     scores: Dict[str, float] = {}
-    for ranked in ranked_lists:
+    for idx, ranked in enumerate(ranked_lists):
+        w = weights[idx] if weights and idx < len(weights) else 1.0
         for rank, doc in enumerate(ranked, start=1):
-            scores[doc] = scores.get(doc, 0.0) + 1.0 / (k + rank)
+            scores[doc] = scores.get(doc, 0.0) + w / (k + rank)
 
     sorted_docs = sorted(scores, key=lambda d: scores[d], reverse=True)
     seen: set[str] = set()
@@ -316,25 +410,58 @@ def retrieve_relevant_chunks(
     k: int = 10,
     resume_pdf_bytes: Optional[bytes] = None,
 ) -> RetrievedContext:
-    """Multi-query semantic retrieval with Reciprocal Rank Fusion."""
+    """Multi-query Hybrid retrieval (Dense ChromaDB + Sparse BM25) with Reciprocal Rank Fusion."""
+    if not resume_chunks:
+        return RetrievedContext(retrieved_chunks=[], all_chunks_preview=[], query_count=0)
+
+    # 1. Initialize Dense Vector Store (Chroma)
     vector_store = make_vector_store(
         resume_chunks,
         embeddings_model_name=embeddings_model_name,
         resume_pdf_bytes=resume_pdf_bytes,
     )
 
+    # 2. Initialize Sparse BM25 Retriever
+    bm25_retriever = None
+    try:
+        bm25_retriever = BM25Retriever.from_texts(resume_chunks, k=k)
+    except Exception as exc:
+        logger.warning("BM25Retriever initialization failed: %s; falling back to dense only", exc)
+
     queries = _build_retrieval_queries(job_description, n_queries=settings.retrieval_queries)
-    logger.info("Multi-query retrieval: %d queries × top-%d chunks", len(queries), k)
+    logger.info(
+        "Hybrid multi-query retrieval: %d queries × top-%d (BM25 weight=%.2f)",
+        len(queries),
+        k,
+        settings.bm25_weight,
+    )
 
-    per_query_results: List[List[str]] = []
+    ranked_lists: List[List[str]] = []
+    weights: List[float] = []
+
     for i, query in enumerate(queries):
-        hits = vector_store.similarity_search(query, k=k)
-        texts = [h.page_content for h in hits if h.page_content.strip()]
-        logger.debug("Query %d returned %d chunks", i + 1, len(texts))
-        per_query_results.append(texts)
+        # Dense ChromaDB similarity search
+        dense_hits = vector_store.similarity_search(query, k=k)
+        dense_texts = [h.page_content for h in dense_hits if h.page_content.strip()]
+        ranked_lists.append(dense_texts)
+        weights.append(1.0)
 
-    fused = _reciprocal_rank_fusion(per_query_results)
-    logger.info("RRF fusion complete: %d unique chunks retrieved from %d queries", len(fused), len(queries))
+        # Sparse BM25 keyword search
+        if bm25_retriever is not None:
+            try:
+                bm25_hits = bm25_retriever.invoke(query)
+                bm25_texts = [h.page_content for h in bm25_hits if h.page_content.strip()]
+                ranked_lists.append(bm25_texts)
+                weights.append(settings.bm25_weight)
+            except Exception as exc:
+                logger.debug("BM25 retrieval failed for query %d: %s", i + 1, exc)
+
+    fused = _reciprocal_rank_fusion(ranked_lists, k=60, weights=weights)
+    logger.info(
+        "Hybrid RRF fusion complete: %d unique chunks retrieved from %d search passes",
+        len(fused),
+        len(ranked_lists),
+    )
 
     return RetrievedContext(
         retrieved_chunks=fused,

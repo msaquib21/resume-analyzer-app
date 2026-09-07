@@ -68,10 +68,13 @@ _analysis_semaphore = asyncio.Semaphore(settings.max_concurrent_analyses)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.setup_observability()
     logger.info("Starting Agentic Resume Analyzer backend")
     logger.info("Ollama URL  : %s", settings.ollama_base_url)
     logger.info("LLM model   : %s", settings.ollama_model)
+    logger.info("Available models: %s", settings.available_models)
     logger.info("Embeddings  : %s", settings.embeddings_model)
+    logger.info("LangSmith tracing: %s", settings.langchain_tracing_v2)
     logger.info("Max concurrent: %d", settings.max_concurrent_analyses)
     yield
     logger.info("Backend shutting down")
@@ -104,13 +107,18 @@ graph = build_resume_analysis_graph(model=settings.ollama_model)
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _build_graph_payload(job_description: str, pdf_bytes: bytes, callback=None) -> dict:
+def _build_graph_payload(
+    job_description: str,
+    pdf_bytes: bytes,
+    callback=None,
+    model: str | None = None,
+) -> dict:
     """Assemble the initial LangGraph state dict."""
     return {
         "job_description": job_description,
         "resume_pdf_bytes": pdf_bytes,
         "embeddings_model_name": settings.embeddings_model,
-        "ollama_model_name": settings.ollama_model,
+        "ollama_model_name": model or settings.ollama_model,
         "progress_callback": callback,
         # Default outputs (overwritten by nodes)
         "resume_chunks": [],
@@ -161,6 +169,7 @@ async def health() -> HealthResponse:
         ollama_reachable=ollama_ok,
         model=settings.ollama_model,
         embeddings_model=settings.embeddings_model,
+        available_models=settings.available_models,
     )
 
 
@@ -182,9 +191,10 @@ async def health() -> HealthResponse:
 async def analyze(
     job_description: str = Form(..., description="Full job description text."),
     resume_pdf: UploadFile = File(..., description="Candidate's resume as a PDF."),
+    model: str | None = Form(None, description="Optional local Ollama model override."),
 ) -> AnalysisResponse:
     """Run the full LangGraph analysis with rate limiting."""
-    logger.info("POST /analyze — file=%s size=~%s", resume_pdf.filename, resume_pdf.size)
+    logger.info("POST /analyze — file=%s size=~%s model=%s", resume_pdf.filename, resume_pdf.size, model or settings.ollama_model)
 
     pdf_bytes = await resume_pdf.read()
     if not pdf_bytes:
@@ -202,7 +212,7 @@ async def analyze(
 
     t0 = time.perf_counter()
     async with _analysis_semaphore:
-        payload = _build_graph_payload(job_description, pdf_bytes)
+        payload = _build_graph_payload(job_description, pdf_bytes, model=model)
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(graph.invoke, payload),
@@ -262,11 +272,13 @@ async def analyze(
 async def analyze_stream(
     job_description: str = Form(...),
     resume_pdf: UploadFile = File(...),
+    model: str | None = Form(None),
 ) -> StreamingResponse:
     logger.info(
-        "POST /analyze/stream — file=%s size=~%s | JD length=%d (preview: %.80r)",
+        "POST /analyze/stream — file=%s size=~%s model=%s | JD length=%d (preview: %.80r)",
         resume_pdf.filename,
         resume_pdf.size,
+        model or settings.ollama_model,
         len(job_description),
         job_description[:80],
     )
@@ -290,7 +302,7 @@ async def analyze_stream(
     def _progress_callback(stage: str, message: str) -> None:
         event_queue.put({"event": stage, "message": message})
 
-    payload = _build_graph_payload(job_description, pdf_bytes, callback=_progress_callback)
+    payload = _build_graph_payload(job_description, pdf_bytes, callback=_progress_callback, model=model)
 
     async def _event_generator() -> AsyncGenerator[str, None]:
         t0 = time.perf_counter()

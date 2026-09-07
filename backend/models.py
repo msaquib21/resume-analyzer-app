@@ -18,7 +18,11 @@ class GapAnalysisOutput(BaseModel):
 
     gaps: list[str] = Field(
         default_factory=list,
-        description="List of specific, actionable skill or experience gaps.",
+        description=(
+            "List of specific, actionable skill or experience gaps. "
+            "You are a strict text-matcher. Base gaps ONLY on the provided job description text. "
+            "Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written."
+        ),
     )
 
 
@@ -33,7 +37,11 @@ class ScoreCoachOutput(BaseModel):
     )
     gaps: list[str] = Field(
         default_factory=list,
-        description="Refined list of skill/experience gaps tied to the JD.",
+        description=(
+            "Refined list of skill/experience gaps tied strictly to the JD. "
+            "You are a strict text-matcher. Base gaps ONLY on the provided job description text. "
+            "Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written."
+        ),
     )
     improvements: list[str] = Field(
         default_factory=list,
@@ -41,7 +49,7 @@ class ScoreCoachOutput(BaseModel):
     )
     preparation: list[str] = Field(
         default_factory=list,
-        description="Specific interview study topics aligned to gaps and weaknesses.",
+        description="Specific interview study topics aligned strictly to the job description gaps and weaknesses.",
     )
 
 
@@ -136,6 +144,10 @@ class HealthResponse(BaseModel):
     ollama_reachable: bool = Field(description="Whether the Ollama API responded.")
     model: str = Field(description="Configured LLM model name.")
     embeddings_model: str = Field(description="Configured embeddings model name.")
+    available_models: list[str] = Field(
+        default_factory=list,
+        description="Supported local Ollama models that can be selected.",
+    )
 
 
 class ErrorDetail(BaseModel):
