@@ -704,6 +704,35 @@ div.stButton > button[kind="primary"]:hover {
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-text { font-size: 1rem; font-weight: 700; color: #FFFFFF; margin-bottom: 6px; }
 .loading-sub  { font-size: 0.82rem; color: var(--muted); font-family: var(--mono); }
+
+/* EMPTY STATE SUCCESS CARDS */
+.empty-success-card {
+  padding: 24px 28px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgba(0, 255, 163, 0.08) 0%, rgba(56, 189, 248, 0.04) 100%);
+  border: 1px solid rgba(0, 255, 163, 0.25);
+  box-shadow: 0 4px 20px rgba(0, 255, 163, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 16px 0;
+}
+.empty-success-icon {
+  font-size: 2.2rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.empty-success-title {
+  color: var(--mint);
+  font-weight: 800;
+  font-size: 1.05rem;
+  margin-bottom: 4px;
+}
+.empty-success-desc {
+  color: #D1D5DB;
+  font-size: 0.90rem;
+  line-height: 1.5;
+}
 </style>
 """
 
@@ -1097,9 +1126,21 @@ def render_analysis_page():
                 st.error(st.session_state.error)
             elif out:
                 score = int(out.get("score", 0) or 0)
-                gaps = out.get("gaps", []) or []
-                improvements = out.get("improvements", []) or []
-                preparation = out.get("preparation", []) or []
+                def _sanitize_frontend_items(items):
+                    if not items or not isinstance(items, list):
+                        return []
+                    cleaned = []
+                    for it in items:
+                        if it is None:
+                            continue
+                        s = str(it).strip()
+                        if s and s not in ('""', "''", "[]", "{}", "none", "n/a", "null"):
+                            cleaned.append(s)
+                    return cleaned
+
+                gaps = _sanitize_frontend_items(out.get("gaps"))
+                improvements = _sanitize_frontend_items(out.get("improvements"))
+                preparation = _sanitize_frontend_items(out.get("preparation"))
                 keywords = out.get("keywords", []) or []
                 analysis_id = out.get("analysis_id", "")
                 elapsed_display = out.get("elapsed_seconds", elapsed)
@@ -1216,7 +1257,14 @@ def render_analysis_page():
                             )
                         st.markdown('</div>', unsafe_allow_html=True)
                     else:
-                        st.markdown('<div style="text-align:center; padding:2rem; color:var(--mint);">✅ No critical skill gaps detected. Strong match!</div>', unsafe_allow_html=True)
+                        st.markdown(
+                            '<div class="empty-success-card">'
+                            '<div class="empty-success-icon">🎉</div>'
+                            '<div><div class="empty-success-title">Perfect Match!</div>'
+                            '<div class="empty-success-desc">No critical technical gaps were identified for this role. Candidate satisfies all core requirements.</div></div>'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
 
                 # ── Improvements Tab ──
                 with imp_tab:
@@ -1254,6 +1302,15 @@ def render_analysis_page():
                                 unsafe_allow_html=True,
                             )
                         st.markdown('</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(
+                            '<div class="empty-success-card">'
+                            '<div class="empty-success-icon">🌟</div>'
+                            '<div><div class="empty-success-title">Outstanding Alignment!</div>'
+                            '<div class="empty-success-desc">Your resume already explicitly demonstrates the key requirements for this position.</div></div>'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
 
                 # ── Preparation Tab ──
                 with prep_tab:
@@ -1288,6 +1345,15 @@ def render_analysis_page():
                                 unsafe_allow_html=True,
                             )
                         st.markdown('</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(
+                            '<div class="empty-success-card">'
+                            '<div class="empty-success-icon">🎯</div>'
+                            '<div><div class="empty-success-title">Interview Ready!</div>'
+                            '<div class="empty-success-desc">Candidate meets all core technical requirements. Focus on standard system design and behavioral alignment.</div></div>'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
 
                 # ── Keywords Tab ──
                 with kw_tab:

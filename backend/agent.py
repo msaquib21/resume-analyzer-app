@@ -221,7 +221,7 @@ def _normalize_list_item(item: Any) -> str:
             head = str_values[0].rstrip(".")
             tail = " ".join(v.rstrip(".") + "." for v in str_values[1:])
             return f"{head}: {tail}"
-        return str(item)
+        return ""
 
     if isinstance(item, str):
         s = item.strip()
@@ -233,10 +233,14 @@ def _normalize_list_item(item: Any) -> str:
                     return _normalize_list_item(decoded)
             except Exception:
                 pass
+        if s in ('""', "''", "[]", "{}", "none", "n/a", "null"):
+            return ""
         return s
 
-    return str(item) if item is not None else ""
-
+    if item is None:
+        return ""
+    s = str(item).strip()
+    return "" if s in ('""', "''", "[]", "{}", "none", "n/a", "null") else s
 
 
 def _clean_gap_text(text: str) -> str:
@@ -245,7 +249,7 @@ def _clean_gap_text(text: str) -> str:
     parts = s.split(":", 2)
     if len(parts) >= 3 and parts[0].strip().lower() == parts[1].strip().lower():
         s = f"{parts[0].strip()}: {parts[2].strip()}"
-    return s
+    return s.strip()
 
 
 def _clean_improvement_text(text: str) -> str:
@@ -268,17 +272,20 @@ def _clean_improvement_text(text: str) -> str:
     ]
     for pattern, repl in replacements:
         s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
-    return s
+    return s.strip()
 
 
 def _normalize_model_lists(obj: Any) -> Any:
     """Ensure string list attributes on Pydantic models are stripped of dict wrappers and polished."""
+    def _is_valid(val: str) -> bool:
+        return bool(val and val.strip() and val.strip() not in ('""', "''", "[]", "{}", "none", "n/a", "null"))
+
     if hasattr(obj, "gaps") and isinstance(obj.gaps, list):
-        obj.gaps = [_clean_gap_text(_normalize_list_item(x)) for x in obj.gaps if _normalize_list_item(x)]
+        obj.gaps = [_clean_gap_text(cleaned) for x in obj.gaps for cleaned in [_normalize_list_item(x)] if _is_valid(cleaned)]
     if hasattr(obj, "improvements") and isinstance(obj.improvements, list):
-        obj.improvements = [_clean_improvement_text(_normalize_list_item(x)) for x in obj.improvements if _normalize_list_item(x)]
+        obj.improvements = [_clean_improvement_text(cleaned) for x in obj.improvements for cleaned in [_normalize_list_item(x)] if _is_valid(cleaned)]
     if hasattr(obj, "preparation") and isinstance(obj.preparation, list):
-        obj.preparation = [_normalize_list_item(x) for x in obj.preparation if _normalize_list_item(x)]
+        obj.preparation = [cleaned for x in obj.preparation for cleaned in [_normalize_list_item(x)] if _is_valid(cleaned)]
     return obj
 
 
@@ -541,6 +548,7 @@ Forbid prior-knowledge bias: evaluate strictly against what is written in the JD
 1. If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap.
 2. Never recommend a resume improvement or bullet point that is already visibly present in the candidate's uploaded resume text.
 3. Do not force a static count of 3 gaps. If the candidate satisfies the requirements, return an empty list.
+CRITICAL: If the resume perfectly satisfies the requirements, you must omit the gap/improvement entirely. Your JSON lists must be completely empty (e.g., "gaps": []). Do not invent placeholder objects.
 """
 
 
@@ -598,7 +606,8 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
         "is explicitly present in the resume text, IT IS NOT A GAP. Do NOT claim the candidate lacks something they explicitly have.\n"
         "5. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
         "6. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n"
-        "7. Do NOT force a static count of 3 gaps, improvements, or preparation steps. If the candidate is a strong fit, return fewer or empty lists [].\n\n"
+        "7. Do NOT force a static count of 3 gaps, improvements, or preparation steps. If the candidate is a strong fit, return fewer or empty lists [].\n"
+        '8. CRITICAL: If the resume perfectly satisfies the requirements, you must omit the gap/improvement entirely. Your JSON lists must be completely empty (e.g., "gaps": []). Do not invent placeholder objects.\n\n'
         "JOB DESCRIPTION:\n"
         f"{jd}\n\n"
         "RESUME CONTEXT (retrieved sections):\n"
@@ -622,6 +631,7 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
         "- gaps: list of strings (can be empty [] if the candidate meets all requirements). Each gap MUST cite a requirement explicitly written in the JD. If a skill is already present in the resume, DO NOT flag it.\n"
         "- improvements: list of actionable resume modification advice addressing genuine missing requirements (can be empty []). Format: 'Target Area: NAME | Action Required: DIRECTIVE | JD Alignment: EXPLANATION'. Never recommend anything already present in the resume.\n"
         "- preparation: list of interview study topics addressing genuine gaps (can be empty []). Format: 'Target Gap: NAME | Study: RESOURCE | Practice: PROJECT | Interview Angle: QUESTION'.\n"
+        '- CRITICAL: If the resume perfectly satisfies the requirements, you must omit the gap/improvement entirely. Your JSON lists must be completely empty (e.g., "gaps": []). Do not invent placeholder objects.\n'
         "- Return ONLY valid JSON. No markdown fences. Zero hallucinations."
     )
 

@@ -236,3 +236,49 @@ def test_build_llm_dual_provider_selection(monkeypatch):
     assert isinstance(ollama_llm, Ollama)
     assert ollama_llm.model == "qwen3.5:9b"
 
+
+def test_empty_string_schema_failure_mitigation():
+    """Verify that empty strings, whitespace, and empty dict placeholders are sanitized to empty lists []."""
+    from backend.models import GapAnalysisOutput, ScoreCoachOutput, AnalysisResponse
+    from backend.agent import _normalize_model_lists
+
+    # 1. GapAnalysisOutput validator
+    gap_out = GapAnalysisOutput(gaps=["", "   ", '""', "none", "n/a", "null", "[]", "{}"])
+    assert gap_out.gaps == []
+
+    # 2. ScoreCoachOutput validator
+    score_out = ScoreCoachOutput(
+        score=10,
+        gaps=["", "  ", "null"],
+        improvements=[{}, {"Action Required": "   "}, "  ", "''"],
+        preparation=["\n\t", "n/a", "{}"],
+    )
+    assert score_out.score == 10
+    assert score_out.gaps == []
+    assert score_out.improvements == []
+    assert score_out.preparation == []
+
+    # 3. Agent _normalize_model_lists defense
+    model_obj = ScoreCoachOutput(
+        score=9,
+        gaps=["   "],
+        improvements=[""],
+        preparation=["  "],
+    )
+    normalized = _normalize_model_lists(model_obj)
+    assert normalized.gaps == []
+    assert normalized.improvements == []
+    assert normalized.preparation == []
+
+    # 4. AnalysisResponse API contract
+    api_resp = AnalysisResponse(
+        score=10,
+        gaps=["", " "],
+        improvements=[{"Target Area": " "}],
+        preparation=["null"],
+    )
+    assert api_resp.gaps == []
+    assert api_resp.improvements == []
+    assert api_resp.preparation == []
+
+
