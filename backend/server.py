@@ -263,8 +263,13 @@ async def analyze_stream(
     job_description: str = Form(...),
     resume_pdf: UploadFile = File(...),
 ) -> StreamingResponse:
-    """Server-Sent Events endpoint with rate limiting."""
-    logger.info("POST /analyze/stream — file=%s", resume_pdf.filename)
+    logger.info(
+        "POST /analyze/stream — file=%s size=~%s | JD length=%d (preview: %.80r)",
+        resume_pdf.filename,
+        resume_pdf.size,
+        len(job_description),
+        job_description[:80],
+    )
     pdf_bytes = await resume_pdf.read()
 
     if not pdf_bytes:

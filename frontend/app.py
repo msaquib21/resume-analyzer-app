@@ -720,8 +720,8 @@ if "out" not in st.session_state:
     st.session_state.out = None
 if "error" not in st.session_state:
     st.session_state.error = None
-if "sample_jd" not in st.session_state:
-    st.session_state.sample_jd = ""
+if "active_jd_input" not in st.session_state:
+    st.session_state.active_jd_input = ""
 
 # ---------------------------------------------------------------------------
 # Sidebar (Always Re-openable & Informative)
@@ -841,21 +841,28 @@ def render_analysis_page():
             unsafe_allow_html=True,
         )
 
-        # Quick sample JD filler
-        if st.button("✨ Load Sample AI Engineer Job Description", use_container_width=True):
-            st.session_state.sample_jd = (
-                "Role: Senior AI / MLOps Engineer\n"
-                "Requirements:\n"
-                "- 3+ years experience with Python, FastAPI, and asynchronous backend microservices.\n"
-                "- Hands-on production experience building RAG pipelines using LangChain, LangGraph, and Vector Databases (ChromaDB, Pinecone, FAISS).\n"
-                "- Experience fine-tuning and deploying open-source LLMs (Llama, Qwen, Mistral) on AWS SageMaker or GCP.\n"
-                "- Strong software engineering fundamentals: automated testing (pytest), Docker containerization, and CI/CD automation.\n"
-                "- Strong communication skills and cross-functional leadership."
-            )
+        # Quick sample JD filler & clear controls
+        col_jd_act1, col_jd_act2 = st.columns([3, 1])
+        with col_jd_act1:
+            if st.button("✨ Load Sample AI Engineer JD", use_container_width=True):
+                st.session_state["active_jd_input"] = (
+                    "Role: Senior AI / MLOps Engineer\n"
+                    "Requirements:\n"
+                    "- 3+ years experience with Python, FastAPI, and asynchronous backend microservices.\n"
+                    "- Hands-on production experience building RAG pipelines using LangChain, LangGraph, and Vector Databases (ChromaDB, Pinecone, FAISS).\n"
+                    "- Experience fine-tuning and deploying open-source LLMs (Llama, Qwen, Mistral) on AWS SageMaker or GCP.\n"
+                    "- Strong software engineering fundamentals: automated testing (pytest), Docker containerization, and CI/CD automation.\n"
+                    "- Strong communication skills and cross-functional leadership."
+                )
+                st.rerun()
+        with col_jd_act2:
+            if st.button("🗑️ Clear", use_container_width=True):
+                st.session_state["active_jd_input"] = ""
+                st.rerun()
 
         job_description = st.text_area(
             "Job Description",
-            value=st.session_state.sample_jd,
+            key="active_jd_input",
             height=240,
             placeholder="Paste the target Job Description here (skills, tools, responsibilities, years of experience)...",
             label_visibility="collapsed",
@@ -958,8 +965,9 @@ def render_analysis_page():
             )
             return
 
-        # Input Validation
-        if not job_description.strip():
+        # Input Validation — guarantees active UI state is read
+        active_jd = st.session_state.get("active_jd_input", "").strip()
+        if not active_jd:
             st.error("⚠️ Please paste a Job Description before running the analysis.")
             st.session_state.error = "Missing job description."
         elif resume_file is None:
@@ -1015,12 +1023,12 @@ def render_analysis_page():
             error_msg = st.session_state.error
             elapsed = 0.0
 
-            # Execute SSE Stream
+            # Execute SSE Stream with verified active JD payload
             if not out and not error_msg:
                 try:
                     resume_bytes = resume_file.getvalue()
                     files = {"resume_pdf": (resume_file.name, resume_bytes, "application/pdf")}
-                    data = {"job_description": job_description}
+                    data = {"job_description": active_jd}
 
                     with requests.post(f"{BACKEND_URL}/analyze/stream", data=data, files=files, stream=True, timeout=420) as resp:
                         resp.raise_for_status()

@@ -1,29 +1,30 @@
 """
-RAG pipeline: PDF parsing, chunking, embedding, and multi-query retrieval.
+RAG pipeline: Layout-aware PDF parsing, chunking, embedding, and multi-query retrieval.
 
-Key design decisions
---------------------
-- **Multi-query retrieval**: runs several distinct semantic queries derived from
-  the JD (full description, keyword cluster, individual skill phrases) and merges
-  results via Reciprocal Rank Fusion (RRF).  This significantly improves recall
-  compared to a single-query similarity search.
-- **Embedding + vector-store caching**: avoids re-embedding the same resume PDF
-  on every request; keyed by SHA-256 hash of the raw PDF bytes.
-- **Local-only**: no external API calls — everything runs via HuggingFace
-  sentence-transformers and ChromaDB.
+Key architectural optimizations
+-------------------------------
+- **Layout-Aware PDF Parsing**: Prevents multi-column resumes from merging columns
+  horizontally (e.g. skills like "Redis (Vector DB)", "OCI" being joined into experience text).
+- **20% Chunk Overlap**: Preserves full contextual sentences and bullet points across boundaries.
+- **High Recall Multi-Query Retrieval**: Executes diverse semantic queries fused via RRF,
+  with an expanded Top-K window to guarantee full candidate coverage for the LLM.
+- **Embedding & Vector-Store Caching**: In-memory LRU Chroma caching keyed by SHA-256 hash.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import os
+import re
 import tempfile
 import threading
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from langchain_community.document_loaders import PyPDFLoader
+import pypdf
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -45,38 +46,112 @@ class RetrievedContext:
     query_count: int = 0  # number of distinct queries executed
 
 
-# ── PDF loading & chunking ─────────────────────────────────────────────────────
+# ── Layout-Aware Multi-Column PDF Parsing ──────────────────────────────────────
+
+
+def _parse_multicolumn_layout(layout_text: str) -> str:
+    """Disentangle multi-column resume layouts into logical reading order.
+
+    In two-column resumes, naive text extractors read lines horizontally across
+    the page, jumbling separate sections (e.g. left sidebar skills with right-hand
+    work experience). This function detects vertical whitespace gutters between
+    columns and reconstructs the text column-by-column in top-to-bottom order.
+    """
+    lines = layout_text.splitlines()
+    if not lines:
+        return ""
+
+    # Filter lines that have substantial text and wide whitespace gaps
+    long_lines = [l for l in lines if len(l.strip()) > 25 and "   " in l]
+    if len(long_lines) < 3:
+        # Single column or irregular: collapse excess spaces within lines
+        return "\n".join(re.sub(r" {2,}", " ", l).strip() for l in lines if l.strip())
+
+    # Find positions of vertical whitespace gutters (>= 3 consecutive spaces)
+    gap_positions: List[int] = []
+    for l in long_lines:
+        for m in re.finditer(r" {3,}", l):
+            gap_positions.append((m.start() + m.end()) // 2)
+
+    if not gap_positions:
+        return "\n".join(re.sub(r" {2,}", " ", l).strip() for l in lines if l.strip())
+
+    # Bin gutter positions in 6-character intervals to find dominant column split
+    binned = Counter(p // 6 * 6 for p in gap_positions)
+    best_bin, count = binned.most_common(1)[0]
+
+    # If at least 35% of multi-space lines share this column gutter:
+    if count >= len(long_lines) * 0.35:
+        split_x = best_bin + 3
+        col1_lines: List[str] = []
+        col2_lines: List[str] = []
+        for l in lines:
+            if len(l) > split_x:
+                c1 = l[:split_x].strip()
+                c2 = l[split_x:].strip()
+                if c1:
+                    col1_lines.append(c1)
+                if c2:
+                    col2_lines.append(c2)
+            else:
+                c1 = l.strip()
+                if c1:
+                    col1_lines.append(c1)
+
+        # Output Column 1 top-to-bottom, followed by Column 2 top-to-bottom
+        return "\n".join(col1_lines) + "\n\n" + "\n".join(col2_lines)
+
+    return "\n".join(re.sub(r" {2,}", " ", l).strip() for l in lines if l.strip())
+
+
+def extract_layout_aware_text(pdf_bytes: bytes) -> str:
+    """Extract full text from PDF bytes with layout awareness and column separation."""
+    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+    page_texts: List[str] = []
+
+    for i, page in enumerate(reader.pages):
+        raw_text = ""
+        # 1. Attempt layout-aware extraction
+        try:
+            raw_text = page.extract_text(extraction_mode="layout") or ""
+        except Exception as exc:
+            logger.debug("Page %d layout extraction failed: %s; trying plain mode", i + 1, exc)
+
+        # 2. Fallback to plain extraction if layout mode returned nothing
+        if not raw_text.strip():
+            try:
+                raw_text = page.extract_text() or ""
+            except Exception as exc:
+                logger.warning("Page %d plain extraction failed: %s", i + 1, exc)
+
+        if raw_text.strip():
+            clean_page = _parse_multicolumn_layout(raw_text)
+            page_texts.append(clean_page)
+
+    full_resume_text = "\n\n--- PAGE BREAK ---\n\n".join(page_texts)
+    logger.info("PDF extraction complete: %d pages, %d characters", len(reader.pages), len(full_resume_text))
+    return full_resume_text
 
 
 def load_and_chunk_pdf(pdf_bytes: bytes) -> List[str]:
-    """Extract text from PDF bytes and return a list of text chunks.
+    """Extract text using layout-aware parsing and split into semantically continuous chunks."""
+    full_text = extract_layout_aware_text(pdf_bytes)
+    if not full_text.strip():
+        logger.warning("PDF extraction returned empty text.")
+        return []
 
-    Uses a temporary file because ``PyPDFLoader`` requires a filesystem path.
-    The temp file is always cleaned up — even on error.
-    """
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(pdf_bytes)
-        tmp_path = tmp.name
-
-    try:
-        loader = PyPDFLoader(tmp_path)
-        docs = loader.load()
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
-        )
-        split_docs = splitter.split_documents(docs)
-        chunks = [d.page_content for d in split_docs if d.page_content.strip()]
-        logger.info("PDF parsed: %d raw docs → %d chunks", len(docs), len(chunks))
-        return chunks
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,  # 20% overlap preserved
+        separators=["\n\n--- PAGE BREAK ---\n\n", "\n\n", "\n", ". ", " ", ""],
+    )
+    chunks = splitter.split_text(full_text)
+    clean_chunks = [c.strip() for c in chunks if c.strip()]
+    logger.info("PDF chunked: %d chunks (chunk_size=%d, overlap=%d)", len(clean_chunks), settings.chunk_size, settings.chunk_overlap)
+    return clean_chunks
 
 
-# ── Embedding & vector store caching ─────────────────────────────────────────
+# ── Embedding & Vector Store Caching ─────────────────────────────────────────
 
 _EMBEDDINGS_CACHE_LOCK = threading.Lock()
 _EMBEDDINGS_CACHE: Dict[str, HuggingFaceEmbeddings] = {}
@@ -109,11 +184,7 @@ def make_vector_store(
     embeddings_model_name: str,
     resume_pdf_bytes: Optional[bytes] = None,
 ) -> Chroma:
-    """Build (or retrieve from cache) a Chroma vector store for *chunks*.
-
-    The store is keyed by the SHA-256 hash of the raw PDF bytes so the same
-    resume is never re-embedded within a server session.
-    """
+    """Build (or retrieve from cache) a Chroma vector store for *chunks*."""
     embeddings = _get_embeddings(embeddings_model_name)
     cache_key = (
         _resume_cache_key(resume_pdf_bytes, embeddings_model_name)
@@ -154,23 +225,18 @@ def make_vector_store(
     return vs
 
 
-# ── JD query generation ───────────────────────────────────────────────────────
+# ── JD Query Generation ───────────────────────────────────────────────────────
 
 
-def _extract_skill_keywords(job_description: str, k: int = 12) -> List[str]:
-    """Lightweight local keyword extraction — no LLM required.
-
-    Prefers longer, technical tokens and ranks by frequency.
-    """
-    import re
-
+def _extract_skill_keywords(job_description: str, k: int = 16) -> List[str]:
+    """Lightweight local keyword extraction — no LLM required."""
     STOP_WORDS = {
         "the", "and", "to", "of", "in", "a", "for", "with", "on", "is",
         "are", "as", "an", "or", "will", "be", "you", "our", "at", "by",
         "from", "that", "this", "it", "they", "them", "their", "may",
         "must", "should", "role", "responsibilities", "requirements",
         "experience", "work", "using", "use", "team", "strong", "ability",
-        "knowledge", "years", "proven", "background", "good",
+        "knowledge", "years", "proven", "background", "good", "plus",
     }
 
     words = re.findall(r"[a-z0-9][a-z0-9+.#_\-]{1,}", job_description.lower())
@@ -193,28 +259,26 @@ def _extract_skill_keywords(job_description: str, k: int = 12) -> List[str]:
     return out
 
 
-def _build_retrieval_queries(job_description: str, n_queries: int = 3) -> List[str]:
-    """Generate *n_queries* semantically diverse queries for multi-query RAG.
-
-    Strategy:
-    1. Full JD (dense semantic signal)
-    2. Top-k extracted skill keywords (lexical / technical signal)
-    3. First 512 chars of JD (intro / seniority signal)
-    """
+def _build_retrieval_queries(job_description: str, n_queries: int = 4) -> List[str]:
+    """Generate *n_queries* semantically diverse queries for multi-query RAG."""
     queries: List[str] = []
 
-    # Query 1: full job description (truncated for embedding model token limits)
+    # Query 1: full job description (core requirements focus)
     queries.append(job_description[:2000])
 
-    # Query 2: top technical keywords joined as a skill phrase
-    keywords = _extract_skill_keywords(job_description, k=15)
+    # Query 2: top technical keywords joined as a skills cluster
+    keywords = _extract_skill_keywords(job_description, k=16)
     if keywords:
         queries.append(" ".join(keywords))
 
-    # Query 3: opening paragraph (often contains seniority / role summary)
-    opening = job_description.strip()[:512]
+    # Query 3: opening paragraph (seniority / title / domain focus)
+    opening = job_description.strip()[:600]
     if opening and opening not in queries:
         queries.append(opening)
+
+    # Query 4: secondary technical keywords
+    if len(keywords) > 8:
+        queries.append(" ".join(keywords[8:24]))
 
     return queries[:n_queries]
 
@@ -225,20 +289,13 @@ def _build_retrieval_queries(job_description: str, n_queries: int = 3) -> List[s
 def _reciprocal_rank_fusion(
     ranked_lists: List[List[str]], k: int = 60
 ) -> List[str]:
-    """Merge multiple ranked result lists using Reciprocal Rank Fusion (RRF).
-
-    RRF score = Σ  1 / (k + rank_i)   for each list that contains the document.
-
-    Documents with the highest combined RRF scores appear first in the output.
-    Duplicate texts are deduplicated while preserving fusion order.
-    """
+    """Merge multiple ranked result lists using Reciprocal Rank Fusion (RRF)."""
     scores: Dict[str, float] = {}
     for ranked in ranked_lists:
         for rank, doc in enumerate(ranked, start=1):
             scores[doc] = scores.get(doc, 0.0) + 1.0 / (k + rank)
 
     sorted_docs = sorted(scores, key=lambda d: scores[d], reverse=True)
-    # Deduplicate while preserving order
     seen: set[str] = set()
     unique: List[str] = []
     for doc in sorted_docs:
@@ -248,7 +305,7 @@ def _reciprocal_rank_fusion(
     return unique
 
 
-# ── Public retrieval API ──────────────────────────────────────────────────────
+# ── Public Retrieval API ──────────────────────────────────────────────────────
 
 
 def retrieve_relevant_chunks(
@@ -256,25 +313,10 @@ def retrieve_relevant_chunks(
     job_description: str,
     resume_chunks: List[str],
     embeddings_model_name: str,
-    k: int = 6,
+    k: int = 10,
     resume_pdf_bytes: Optional[bytes] = None,
 ) -> RetrievedContext:
-    """Multi-query semantic retrieval with Reciprocal Rank Fusion.
-
-    Runs ``n_queries`` independent similarity searches against the resume's
-    vector store, then merges the ranked result lists via RRF to produce a
-    single, deduplicated, high-recall set of relevant chunks.
-
-    Args:
-        job_description: Raw JD text used to generate queries.
-        resume_chunks: Pre-chunked resume text strings.
-        embeddings_model_name: HuggingFace model identifier.
-        k: Number of chunks to retrieve *per query*.
-        resume_pdf_bytes: Raw PDF bytes for cache-keying (optional).
-
-    Returns:
-        :class:`RetrievedContext` with the fused, ranked chunks.
-    """
+    """Multi-query semantic retrieval with Reciprocal Rank Fusion."""
     vector_store = make_vector_store(
         resume_chunks,
         embeddings_model_name=embeddings_model_name,
@@ -292,7 +334,7 @@ def retrieve_relevant_chunks(
         per_query_results.append(texts)
 
     fused = _reciprocal_rank_fusion(per_query_results)
-    logger.info("RRF fusion complete: %d unique chunks from %d queries", len(fused), len(queries))
+    logger.info("RRF fusion complete: %d unique chunks retrieved from %d queries", len(fused), len(queries))
 
     return RetrievedContext(
         retrieved_chunks=fused,

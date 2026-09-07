@@ -97,14 +97,14 @@ Preparation  → interview study topics, each aligned to a specific gap.
 
 
 def _build_ollama(model: str, temperature: float = 0.0) -> Ollama:
-    """Instantiate a local Ollama-backed LLM with JSON output mode and performance optimizations."""
+    """Instantiate a local Ollama-backed LLM with JSON output mode and strict 0.0 temperature."""
     return Ollama(
         model=model,
-        temperature=temperature,
+        temperature=0.0,  # Hardcoded to 0.0 to eliminate creative drift
         base_url=settings.ollama_base_url,
         format="json",
-        num_ctx=2048,
-        num_predict=700,
+        num_ctx=4096,     # Expanded context window for comprehensive RAG chunks + JD
+        num_predict=800,
         keep_alive="15m",
     )
 
@@ -513,47 +513,53 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
         callback("scoring", "Running deep analysis…")
 
     parser = PydanticOutputParser(pydantic_object=ScoreCoachOutput)
-    llm = _build_ollama(state["ollama_model_name"])
+    # Hardcode temperature to 0.0 to eliminate creative drift and hallucination
+    llm = _build_ollama(state["ollama_model_name"], temperature=0.0)
 
-    # Limit context to 5 chunks to keep input tokens bounded
-    resume_context = "\n\n".join(state["retrieved_chunks"][:5])
+    # Provide comprehensive context of up to 10 top-ranked retrieved chunks
+    resume_context = "\n\n".join(state["retrieved_chunks"][:10])
     jd = state["job_description"]
 
     keywords = extract_jd_keywords(jd, resume_context)
 
     prompt = (
-        "You are a senior technical recruiter and career coach.\n"
-        "Analyse this resume against the job description. Return ONLY valid JSON — no markdown, no explanation.\n\n"
+        "You are a strict text-matching evaluator. Base your evaluation ONLY on the provided Job Description text. "
+        "Do not hallucinate or assume unlisted industry standards (e.g., AWS, Pinecone, or specific years of experience). "
+        "If a requirement is not explicitly written in the JD, do not penalize the candidate.\n\n"
+        "STRICT GROUNDING INSTRUCTIONS:\n"
+        "1. Read the candidate's RESUME CONTEXT carefully. If a required skill or tool (e.g., 'Redis', 'OCI', 'Docker', 'FastAPI', 'Python') "
+        "is explicitly present in the resume text, IT IS NOT A GAP. Do NOT claim the candidate lacks something they explicitly have.\n"
+        "2. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
+        "3. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n\n"
         "JOB DESCRIPTION:\n"
         f"{jd}\n\n"
-        "RESUME (most relevant sections):\n"
+        "RESUME CONTEXT (retrieved sections):\n"
         f"{resume_context}\n\n"
-        'Output this exact JSON structure with string values (NOT nested objects):\n'
-        '{\n'
-        '  "score": 6,\n'
+        "OUTPUT SCHEMA (Return ONLY valid JSON matching this exact structure):\n"
+        "{\n"
+        '  "score": 7,\n'
         '  "gaps": [\n'
-        '    "Python Proficiency: The resume shows basic scripting but no production-grade Python projects with testing or CI/CD pipelines. The JD requires 2+ years of Python at a senior engineering level. Without this depth the candidate cannot own backend services independently.",\n'
-        '    "Cloud Deployment: No evidence of deploying models to AWS, GCP, or Azure is present in the resume. The JD explicitly requires experience deploying ML workloads to a major cloud provider. This gap means the candidate cannot own the MLOps lifecycle end-to-end.",\n'
-        '    "Vector Databases: The resume does not mention Pinecone, Weaviate, FAISS, or any vector store integration. The JD demands hands-on experience building retrieval pipelines with vector databases. Without this the candidate cannot build the RAG systems central to this role."\n'
-        '  ],\n'
+        '    "Missing JD Requirement: The resume lacks evidence for a specific tool or skill required by the JD. The JD explicitly states: <Quote exact requirement from JD>. Impact: <Why this impacts the role>.",\n'
+        '    "Unaddressed Core Responsibility: The candidate lacks depth in a core JD responsibility. The JD explicitly demands: <Quote exact requirement from JD>. Impact: <Why this impacts the role>.",\n'
+        '    "Technical Qualification Gap: The resume does not demonstrate a technical qualification written in the JD. The JD demands: <Quote exact requirement from JD>. Impact: <Why this impacts the role>."\n'
+        "  ],\n"
         '  "improvements": [\n'
-        '    "Target Area: Experience Section (Python & Testing) | Action Required: Add an explicit bullet point to your most recent role demonstrating how you structured Python backend services with unit testing (pytest) and CI/CD automation. | JD Alignment: The JD explicitly demands senior-level Python engineering with rigorous testing practices rather than just scripting.",\n'
-        '    "Target Area: Projects Section (Cloud MLOps) | Action Required: Create or highlight a project where you deployed a real-time ML model to AWS SageMaker or GCP, specifically mentioning containerization (Docker) and endpoint latency. | JD Alignment: Addresses the JD\'s strict requirement for hands-on experience deploying and monitoring models in production cloud environments.",\n'
-        '    "Target Area: Skills & Summary (Vector Databases) | Action Required: Explicitly list vector database tools like Pinecone, ChromaDB, or FAISS in your Skills section, and add a brief technical summary line explaining your approach to semantic search pipelines. | JD Alignment: Bridges the gap where the resume omitted vector store integration, which is core to the RAG systems outlined in this job description."\n'
-        '  ],\n'
+        '    "Target Area: Experience Section | Action Required: Add an explicit bullet point demonstrating how you implemented <Missing Skill 1> with measurable production impact. | JD Alignment: Directly satisfies the explicit JD requirement for <Missing Skill 1>.",\n'
+        '    "Target Area: Projects Section | Action Required: Feature an end-to-end project applying <Missing Skill 2> to solve a practical problem. | JD Alignment: Fulfills the job description\'s requirement for <Missing Skill 2>.",\n'
+        '    "Target Area: Technical Skills | Action Required: Explicitly feature <Missing Skill 3> in your technical skills overview. | JD Alignment: Aligns with the core tooling required by this job description."\n'
+        "  ],\n"
         '  "preparation": [\n'
-        '    "Target Gap: Vector Databases | Study: Pinecone documentation + LangChain retrieval guide | Practice: Build a semantic search engine over 10,000 Wikipedia articles using FAISS | Interview Angle: How would you choose between Pinecone, Weaviate, and FAISS for a production RAG system?",\n'
-        '    "Target Gap: Cloud Deployment | Study: AWS SageMaker Developer Guide + MLOps on AWS course (Coursera) | Practice: Deploy a scikit-learn model as a SageMaker endpoint with auto-scaling | Interview Angle: Walk me through how you would set up a CI/CD pipeline for an ML model on AWS.",\n'
-        '    "Target Gap: Python Proficiency | Study: Fluent Python by Luciano Ramalho (chapters 1-10) | Practice: Re-implement one of your existing projects with full pytest coverage and a GitHub Actions CI pipeline | Interview Angle: How do you structure a Python project for long-term maintainability?"\n'
-        '  ]\n'
-        '}\n\n'
-        "Now produce the SAME JSON structure for the actual resume and JD above. Replace all example values with real analysis.\n"
+        '    "Target Gap: <Missing Skill 1> | Study: Key official documentation and best practices for <Missing Skill 1> | Practice: Build a reference demo implementing <Missing Skill 1> | Interview Angle: How do you address common production challenges in <Missing Skill 1>?",\n'
+        '    "Target Gap: <Missing Skill 2> | Study: Architectural design patterns for <Missing Skill 2> | Practice: Execute an end-to-end integration using <Missing Skill 2> | Interview Angle: What tradeoffs do you evaluate when deploying <Missing Skill 2>?",\n'
+        '    "Target Gap: <Missing Skill 3> | Study: Core concepts and industry standards for <Missing Skill 3> | Practice: Re-implement a sample scenario testing <Missing Skill 3> | Interview Angle: Walk me through your hands-on experience with <Missing Skill 3>."\n'
+        "  ]\n"
+        "}\n\n"
         "RULES:\n"
-        "- score: integer only. 0-2=largely misaligned, 3-5=partial, 6-8=mostly aligned, 9-10=strong match.\n"
-        "- gaps: exactly 3 strings. Each must be a single plain string (NOT a nested object). Format: 'Skill Name: sentence about missing evidence. sentence about what JD demands. sentence about real-world consequence.'\n"
-        "- improvements: exactly 3 strings. Each string MUST give clear, actionable advice instructing the candidate what exact modifications or additions they should make to their resume/portfolio (`Add...`, `Highlight...`, `Quantify...`, `Rephrase...`) to tailor it for this specific Job Description. Format: 'Target Area: NAME | Action Required: DIRECTIVE | JD Alignment: EXPLANATION'. Do NOT write past-tense resume bullets about what the candidate already did.\n"
+        "- score: integer (0-10) based strictly on the percentage of explicit JD requirements evidenced in the resume context.\n"
+        "- gaps: up to 3 strings (or fewer if candidate is a strong fit). Each gap MUST cite a requirement explicitly written in the JD.\n"
+        "- improvements: exactly 3 strings giving actionable resume modification advice (`Add...`, `Highlight...`, `Quantify...`) tailored to this JD. Format: 'Target Area: NAME | Action Required: DIRECTIVE | JD Alignment: EXPLANATION'.\n"
         "- preparation: exactly 3 strings. Format: 'Target Gap: NAME | Study: RESOURCE | Practice: PROJECT | Interview Angle: QUESTION'.\n"
-        "- Return ONLY valid JSON. No markdown fences. No nested objects inside lists."
+        "- Return ONLY valid JSON. No markdown fences. Zero hallucinations."
     )
 
     t0 = time.perf_counter()

@@ -28,11 +28,11 @@ class Settings(BaseSettings):
     # ── Embeddings ────────────────────────────────────────────────────────
     embeddings_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
-    # ── RAG / Chunking ────────────────────────────────────────────────────
-    chunk_size: int = 500
-    chunk_overlap: int = 50
-    retrieval_k: int = 6          # chunks per query
-    retrieval_queries: int = 3    # number of distinct queries for multi-query RAG
+    # ── RAG / Chunking (Optimized: 20% overlap, increased Top-K) ──────────
+    chunk_size: int = 600
+    chunk_overlap: int = 120        # 20% overlap to preserve semantic context across splits
+    retrieval_k: int = 10           # Increased Top-K chunks per query for comprehensive context
+    retrieval_queries: int = 4      # Multi-query distinct RAG angles
     vector_store_cache_max: int = 5
 
     # ── Server ────────────────────────────────────────────────────────────
