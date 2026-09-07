@@ -541,14 +541,13 @@ def node_extract_and_retrieve(state: ResumeAnalysisState) -> dict:
 # ── Node 2: Gap analysis ──────────────────────────────────────────────────────
 
 NODE_2_SYSTEM_PROMPT = """\
-You are a strict text-matcher. Base gaps ONLY on the provided job description text. Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written.
+You are a strict, highly analytical technical recruiter. You must perform a rigorous cross-reference of the Job Description against the candidate's resume. If a core technology, framework, or responsibility listed in the Job Description is missing from the resume, you MUST document it as a gap. Do not be lenient. However, if the candidate explicitly possesses the exact skill, do not document it as a gap.
 
-Compare the provided RESUME CONTEXT against the JOB DESCRIPTION.
-Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.
-1. If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap.
-2. Never recommend a resume improvement or bullet point that is already visibly present in the candidate's uploaded resume text.
-3. Do not force a static count of 3 gaps. If the candidate satisfies the requirements, return an empty list.
-CRITICAL: If the resume perfectly satisfies the requirements, you must omit the gap/improvement entirely. Your JSON lists must be completely empty (e.g., "gaps": []). Do not invent placeholder objects.
+Evaluate strictly against the provided Job Description text and retrieved resume sections:
+1. Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.
+2. If a core technology, framework, or responsibility listed in the Job Description is missing from the resume, you MUST document it as a gap.
+3. If the candidate explicitly possesses the exact skill in their uploaded resume text, do not document it as a gap.
+4. Do not invent unlisted requirements, and do not overlook genuine missing qualifications.
 """
 
 
@@ -590,32 +589,53 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
     jd = state["job_description"]
 
     keywords = extract_jd_keywords(jd, resume_context)
+    found_kw = [k["keyword"] for k in keywords if k.get("found_in_resume")]
+    missing_kw = [k["keyword"] for k in keywords if not k.get("found_in_resume")]
+    kw_reconciliation = (
+        f"- Confirmed Present in Resume: {', '.join(found_kw) if found_kw else 'None'}\n"
+        f"- Explicitly Missing from Resume: {', '.join(missing_kw) if missing_kw else 'None'}"
+    )
 
-    strict_matcher_rule = (
-        "You are a strict text-matcher. Base gaps ONLY on the provided job description text. "
-        "Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written."
+    recruiter_directive = (
+        "You are a strict, highly analytical technical recruiter. You must perform a rigorous cross-reference of the "
+        "Job Description against the candidate's resume. If a core technology, framework, or responsibility listed in the "
+        "Job Description is missing from the resume, you MUST document it as a gap. Do not be lenient. "
+        "However, if the candidate explicitly possesses the exact skill, do not document it as a gap."
+    )
+
+    scoring_rubric = (
+        "MATHEMATICAL SCORING RUBRIC:\n"
+        "You must calculate the final score logically. Start at 10/10. Apply the following strict deductions:\n"
+        "- Deduct 2 to 3 points if core programming languages or primary frameworks are missing.\n"
+        "- Deduct 2 points if the candidate lacks the required years of experience or seniority.\n"
+        "- Deduct 1 to 2 points if secondary tools or cloud platforms are missing.\n"
+        "- A resume that lacks the majority of the JD requirements MUST score below a 4/10.\n"
+        "- Never award a 10/10 unless the candidate is a flawless match."
     )
 
     prompt = (
-        f"{strict_matcher_rule}\n\n"
+        f"{recruiter_directive}\n\n"
+        f"{scoring_rubric}\n\n"
         "STRICT GROUNDING INSTRUCTIONS:\n"
         "1. Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.\n"
-        "2. If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap.\n"
-        "3. Never recommend a resume improvement or bullet point that is already visibly present in the candidate's uploaded resume text.\n"
-        "4. Read the candidate's RESUME CONTEXT carefully. If a required skill or tool (e.g., 'Redis', 'OCI', 'Docker', 'FastAPI', 'Python', 'C++', 'C#') "
-        "is explicitly present in the resume text, IT IS NOT A GAP. Do NOT claim the candidate lacks something they explicitly have.\n"
-        "5. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
-        "6. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n"
-        "7. Do NOT force a static count of 3 gaps, improvements, or preparation steps. If the candidate is a strong fit, return fewer or empty lists [].\n"
-        '8. CRITICAL: If the resume perfectly satisfies the requirements, you must omit the gap/improvement entirely. Your JSON lists must be completely empty (e.g., "gaps": []). Do not invent placeholder objects.\n\n'
+        "2. Cross-reference every core requirement, technology, framework, and responsibility in the JD with the RESUME CONTEXT.\n"
+        "3. If a core technology, framework, or responsibility listed in the Job Description is missing from the resume, you MUST document it as a gap. Do not be lenient.\n"
+        "4. If a required skill or tool (e.g., 'Redis', 'OCI', 'Docker', 'FastAPI', 'Python', 'C++', 'C#') is explicitly present in the candidate's resume text, IT IS NOT A GAP. Do NOT claim the candidate lacks something they explicitly have.\n"
+        "5. Review the ATS KEYWORD RECONCILIATION below. Any skills marked as 'Explicitly Missing from Resume' MUST be factored into your gap analysis and score deductions.\n"
+        "6. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
+        "7. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n"
+        "8. For every identified gap, provide a concrete resume bullet improvement and an interview preparation roadmap item.\n"
+        "9. Calculate the final score using the MATHEMATICAL SCORING RUBRIC above. Do not default to high scores when requirements are missing.\n\n"
         "JOB DESCRIPTION:\n"
         f"{jd}\n\n"
         "RESUME CONTEXT (retrieved sections):\n"
         f"{resume_context}\n\n"
+        "ATS KEYWORD RECONCILIATION:\n"
+        f"{kw_reconciliation}\n\n"
         f"{format_instructions}\n\n"
         "OUTPUT SCHEMA EXAMPLE (Return ONLY valid JSON matching this structure):\n"
         "{\n"
-        '  "score": 8,\n'
+        '  "score": 3,\n'
         '  "gaps": [\n'
         '    "Missing JD Requirement: The resume lacks evidence for <Explicit Skill from JD>. The JD explicitly states: <Quote exact requirement from JD>."\n'
         "  ],\n"
@@ -627,11 +647,10 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
         "  ]\n"
         "}\n\n"
         "RULES:\n"
-        "- score: integer (0-10) based strictly on the percentage of explicit JD requirements evidenced in the resume context.\n"
-        "- gaps: list of strings (can be empty [] if the candidate meets all requirements). Each gap MUST cite a requirement explicitly written in the JD. If a skill is already present in the resume, DO NOT flag it.\n"
-        "- improvements: list of actionable resume modification advice addressing genuine missing requirements (can be empty []). Format: 'Target Area: NAME | Action Required: DIRECTIVE | JD Alignment: EXPLANATION'. Never recommend anything already present in the resume.\n"
-        "- preparation: list of interview study topics addressing genuine gaps (can be empty []). Format: 'Target Gap: NAME | Study: RESOURCE | Practice: PROJECT | Interview Angle: QUESTION'.\n"
-        '- CRITICAL: If the resume perfectly satisfies the requirements, you must omit the gap/improvement entirely. Your JSON lists must be completely empty (e.g., "gaps": []). Do not invent placeholder objects.\n'
+        "- score: integer (0-10) calculated strictly using the Mathematical Scoring Rubric. Start at 10/10 and apply deductions for missing core languages, frameworks, experience, and secondary tools. Resumes missing the majority of requirements MUST score below 4. Never award a 10/10 unless the candidate is a flawless match.\n"
+        "- gaps: list of strings. Document every genuine missing requirement from the JD. If a skill is explicitly present in the resume, do NOT flag it. Only return [] if the candidate is truly a flawless match.\n"
+        "- improvements: list of actionable resume modification advice addressing each identified gap. Format: 'Target Area: NAME | Action Required: DIRECTIVE | JD Alignment: EXPLANATION'.\n"
+        "- preparation: list of interview study topics addressing each identified gap. Format: 'Target Gap: NAME | Study: RESOURCE | Practice: PROJECT | Interview Angle: QUESTION'.\n"
         "- Return ONLY valid JSON. No markdown fences. Zero hallucinations."
     )
 
