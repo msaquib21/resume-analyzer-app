@@ -9,505 +9,708 @@ import pandas as pd
 
 BACKEND_URL = "http://localhost:8000"
 
-st.set_page_config(page_title="Agentic Resume Analyzer", layout="wide")
+st.set_page_config(
+    page_title="Agentic Resume Analyzer — AI Career Coach",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 # ---------------------------------------------------------------------------
-# Premium UI — CSS Design System
+# Ultra-Modern CSS Design System (Aurora + Cyberpunk Glassmorphism)
 # ---------------------------------------------------------------------------
 STYLES = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
 
 <style>
 /* =====================================================
-   0.  RESET STREAMLIT CHROME
+   0. RESET STREAMLIT CHROME & GUARANTEE SIDEBAR TOGGLE
    ===================================================== */
-[data-testid="stHeader"]     { background:transparent!important; height:0!important; }
-[data-testid="stHeader"] *   { display:none!important; }
-[data-testid="stDecoration"] { display:none!important; }
-#MainMenu { visibility:hidden; }
-footer    { visibility:hidden; }
+[data-testid="stHeader"] {
+  background: transparent !important;
+  z-index: 99999 !important;
+}
+[data-testid="stToolbar"] {
+  display: none !important;
+}
+[data-testid="stDecoration"] {
+  display: none !important;
+}
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+
+/* GUARANTEED SIDEBAR COLLAPSE / EXPAND TOGGLE */
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"],
+button[data-testid="stSidebarCollapsedControl"],
+button[aria-label="Expand sidebar"],
+button[aria-label="Collapse sidebar"],
+button[data-testid="baseButton-headerNoPadding"] {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 9999999 !important;
+  position: fixed !important;
+  top: 14px !important;
+  left: 14px !important;
+  background: rgba(10, 15, 33, 0.95) !important;
+  border: 1.5px solid #00FFA3 !important;
+  border-radius: 10px !important;
+  padding: 6px 10px !important;
+  cursor: pointer !important;
+  box-shadow: 0 0 20px rgba(0, 255, 163, 0.35), 0 4px 14px rgba(0, 0, 0, 0.6) !important;
+  backdrop-filter: blur(16px) !important;
+  pointer-events: auto !important;
+  transition: all 0.25s ease !important;
+}
+
+[data-testid="stSidebarCollapsedControl"]:hover,
+[data-testid="collapsedControl"]:hover,
+button[aria-label="Expand sidebar"]:hover {
+  background: rgba(0, 255, 163, 0.18) !important;
+  border-color: #00FFA3 !important;
+  transform: scale(1.08) !important;
+  box-shadow: 0 0 30px rgba(0, 255, 163, 0.5) !important;
+}
+
+[data-testid="stSidebarCollapsedControl"] svg,
+[data-testid="collapsedControl"] svg,
+button[aria-label="Expand sidebar"] svg,
+button[aria-label="Collapse sidebar"] svg {
+  fill: #00FFA3 !important;
+  color: #00FFA3 !important;
+  stroke: #00FFA3 !important;
+  width: 20px !important;
+  height: 20px !important;
+}
 
 /* =====================================================
-   1.  DESIGN TOKENS — UNIQUE PALETTE
+   1. DESIGN TOKENS
    ===================================================== */
 :root {
-  --bg1:  #060914;
-  --bg2:  #0A0F1F;
-  --bg3:  #0D1326;
+  --bg1:      #060914;
+  --bg2:      #0A0F22;
+  --bg3:      #0E1630;
 
-  --glass:   rgba(255,255,255,0.035);
-  --glass-2: rgba(255,255,255,0.02);
-  --border:  rgba(255,255,255,0.065);
+  --mint:     #00FFA3;
+  --mint-dk:  #00CC84;
+  --rose:     #FF4060;
+  --violet:   #B44DFF;
+  --amber:    #FFB800;
+  --sky:      #38BDF8;
 
-  --text:    #EDF2FF;
-  --muted:   #8899B4;
-  --dimmed:  #4D5F7A;
-
-  --mint:    #00FFA3;
-  --mint-dk: #00CC84;
-  --rose:    #FF4060;
-  --violet:  #B44DFF;
-  --amber:   #FFB800;
-  --sky:     #38BDF8;
-  --accent:  #00FFA3;
+  --text:     #EDF2FF;
+  --muted:    #8899B4;
+  --dimmed:   #506282;
 
   --radius:    18px;
   --radius-sm: 12px;
-  --radius-xs: 8px;
 
-  --font: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  --mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', monospace;
 }
 
 /* =====================================================
-   2.  ANIMATED AURORA BACKGROUND
+   2. ANIMATED AURORA CANVAS BACKGROUND
    ===================================================== */
+[data-testid="stApp"],
 [data-testid="stAppViewContainer"] {
-  background: var(--bg1);
-  color: var(--text);
-  position: relative;
-  overflow: hidden;
+  background: var(--bg1) !important;
+  color: var(--text) !important;
+  font-family: var(--font) !important;
+  overflow-x: hidden !important;
 }
+
 [data-testid="stAppViewContainer"]::before {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 0;
   background:
-    radial-gradient(ellipse 80% 55% at 5% 15%,  rgba(0,255,163,0.07) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 70% at 85% 80%,  rgba(180,77,255,0.08) 0%, transparent 55%),
-    radial-gradient(ellipse 55% 45% at 50% 45%,  rgba(255,64,96,0.05)  0%, transparent 50%);
+    radial-gradient(ellipse 80% 55% at 5% 15%,   rgba(0, 255, 163, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 65% 70% at 85% 85%,  rgba(180, 77, 255, 0.09) 0%, transparent 55%),
+    radial-gradient(ellipse 55% 45% at 50% 45%,  rgba(255, 64, 96, 0.05)  0%, transparent 50%);
   animation: auroraDrift 22s ease-in-out infinite alternate;
   pointer-events: none;
 }
-@keyframes auroraDrift {
-  0%   { transform: translate(0,    0)    scale(1);    }
-  50%  { transform: translate(-35px, 25px) scale(1.06); }
-  100% { transform: translate(18px, -18px) scale(1.02); }
-}
 
-[data-testid="stAppViewContainer"]::after {
-  content: '';
-  position: fixed;
-  width: 360px;
-  height: 360px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(0,255,163,0.07) 0%, transparent 70%);
-  top: 55%;
-  left: 65%;
-  animation: orbFloat 14s ease-in-out infinite alternate;
-  pointer-events: none;
-  z-index: 0;
-}
-@keyframes orbFloat {
+@keyframes auroraDrift {
   0%   { transform: translate(0, 0) scale(1); }
-  100% { transform: translate(-70px, -55px) scale(1.25); }
+  50%  { transform: translate(-30px, 20px) scale(1.05); }
+  100% { transform: translate(20px, -15px) scale(1.02); }
 }
 
 .block-container {
-  padding-top: 1rem;
-  padding-bottom: 2rem;
+  padding-top: 1.2rem !important;
+  padding-bottom: 3rem !important;
+  max-width: 1420px !important;
   position: relative;
   z-index: 1;
 }
 
 /* =====================================================
-   3.  TYPOGRAPHY
-   ===================================================== */
-html, body, [class*="stMarkdown"], [class*="stText"] {
-  font-family: var(--font) !important;
-}
-h1, h2, h3 { color: var(--text) !important; }
-p, label, .stMarkdown p { color: var(--muted) !important; }
-
-/* =====================================================
-   4.  HERO HEADER
+   3. HERO BANNER
    ===================================================== */
 .hero-container {
   text-align: center;
-  margin-bottom: 2.5rem;
-  padding: 2.2rem 1rem 1.5rem;
+  margin-bottom: 1.8rem;
+  padding: 1.2rem 1rem 0.5rem;
 }
 .hero-title {
-  font-size: 2.75rem;
+  font-size: 3rem;
   font-weight: 900;
-  letter-spacing: -0.035em;
-  line-height: 1.08;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
   margin: 0;
-  background: linear-gradient(135deg, #00FFA3 0%, #B44DFF 45%, #FF4060 85%, #00FFA3 100%);
-  background-size: 220% 220%;
+  background: linear-gradient(135deg, #00FFA3 0%, #38BDF8 35%, #B44DFF 70%, #FF4060 100%);
+  background-size: 250% 250%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: shimmer 5s ease-in-out infinite;
+  animation: shimmer 6s ease-in-out infinite;
 }
 @keyframes shimmer {
   0%, 100% { background-position: 0% 50%; }
-  50%       { background-position: 100% 50%; }
+  50%      { background-position: 100% 50%; }
 }
 .hero-subtitle {
-  margin-top: 0.8rem;
+  margin-top: 0.6rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.6rem;
   color: var(--muted);
-  font-size: 0.86rem;
+  font-size: 0.92rem;
   font-weight: 500;
 }
 .hero-badge {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 11px;
+  gap: 6px;
+  padding: 4px 12px;
   border-radius: 999px;
-  font-size: 0.70rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  background: rgba(0,255,163,0.10);
+  background: rgba(0, 255, 163, 0.12);
   color: var(--mint);
-  border: 1px solid rgba(0,255,163,0.28);
-}
-.hero-badge::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--mint);
-  animation: dotPulse 2s ease-in-out infinite;
+  border: 1px solid rgba(0, 255, 163, 0.35);
+  box-shadow: 0 0 12px rgba(0, 255, 163, 0.2);
 }
 
 /* =====================================================
-   5.  GLASSMORPHISM CARD
+   4. GLASS CONTAINER CARD STYLES
    ===================================================== */
-.premium-card {
-  background: rgba(255,255,255,0.025);
-  border: 1px solid rgba(255,255,255,0.055);
+.card-box {
+  background: linear-gradient(180deg, rgba(13, 20, 42, 0.82) 0%, rgba(8, 12, 28, 0.92) 100%);
+  border: 1.5px solid rgba(0, 255, 163, 0.22);
   border-radius: var(--radius);
-  padding: 26px;
-  position: relative;
-  overflow: hidden;
-  transition: border-color 0.3s ease, box-shadow 0.3s ease;
-  box-shadow: 0 4px 28px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.04);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  padding: 24px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  margin-bottom: 20px;
+  transition: all 0.3s ease;
 }
-.premium-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: var(--radius);
-  padding: 1px;
-  background: linear-gradient(135deg, rgba(0,255,163,0.12), transparent 50%, rgba(180,77,255,0.08));
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-}
-.premium-card:hover {
-  border-color: rgba(0,255,163,0.14);
-  box-shadow: 0 8px 44px rgba(0,255,163,0.07), inset 0 1px 0 rgba(255,255,255,0.06);
+.card-box:hover {
+  border-color: rgba(0, 255, 163, 0.40);
+  box-shadow: 0 12px 50px rgba(0, 255, 163, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
-.section-label {
+.card-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.card-header-title {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-weight: 700;
-  font-size: 0.92rem;
-  color: var(--text);
-  margin-bottom: 12px;
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: #FFFFFF;
   letter-spacing: 0.01em;
 }
-.section-label .label-icon {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; border-radius: 10px; font-size: 1rem; flex-shrink: 0;
+.card-header-badge {
+  font-family: var(--mono);
+  font-size: 0.70rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 6px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
-.label-icon-jd  { background: rgba(0,255,163,0.10); color: var(--mint); border: 1px solid rgba(0,255,163,0.20); }
-.label-icon-pdf { background: rgba(255,64,96,0.10); color: var(--rose); border: 1px solid rgba(255,64,96,0.20); }
+.badge-mint {
+  background: rgba(0, 255, 163, 0.12);
+  color: var(--mint);
+  border: 1px solid rgba(0, 255, 163, 0.3);
+}
+.badge-sky {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--sky);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+.card-subtext {
+  font-size: 0.84rem;
+  color: var(--muted);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
 
 /* =====================================================
-   6.  INPUTS
+   5. TEXTAREA & UPLOADER OVERHAUL (VIBRANT & RICH)
    ===================================================== */
-textarea {
-  border-radius: var(--radius-sm) !important; border: 1px solid rgba(255,255,255,0.08) !important;
-  background: rgba(255,255,255,0.022) !important; padding: 1rem !important; color: var(--text) !important;
-  font-family: var(--font) !important; font-size: 0.88rem !important;
-  transition: border-color 0.3s ease, box-shadow 0.3s ease !important;
-}
-textarea:focus {
-  border-color: rgba(0,255,163,0.50) !important;
-  box-shadow: 0 0 0 4px rgba(0,255,163,0.08), 0 0 20px rgba(0,255,163,0.04) !important;
-  background: rgba(255,255,255,0.03) !important; outline: none !important;
+[data-testid="stTextArea"] > div > div {
+  background: linear-gradient(180deg, rgba(14, 22, 46, 0.95) 0%, rgba(9, 14, 30, 0.98) 100%) !important;
+  border: 1.5px solid rgba(0, 255, 163, 0.28) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  transition: all 0.28s ease !important;
+  padding: 4px !important;
 }
 
-div.stFileUploader > label {
-  border-radius: var(--radius-sm) !important; border: 2px dashed rgba(255,255,255,0.10) !important;
-  padding: 1.3rem !important; background: rgba(0,255,163,0.025) !important;
-  color: var(--muted) !important; transition: all 0.3s ease !important;
+[data-testid="stTextArea"] > div > div:focus-within {
+  border-color: #00FFA3 !important;
+  box-shadow: 0 0 0 3px rgba(0, 255, 163, 0.20), 0 0 30px rgba(0, 255, 163, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+  background: rgba(16, 26, 56, 0.98) !important;
 }
-div.stFileUploader > label:hover {
-  border-color: rgba(0,255,163,0.40) !important; background: rgba(0,255,163,0.05) !important;
-  box-shadow: 0 0 0 4px rgba(0,255,163,0.06) !important;
+
+[data-testid="stTextArea"] textarea {
+  color: #FFFFFF !important;
+  font-family: var(--font) !important;
+  font-size: 0.94rem !important;
+  font-weight: 500 !important;
+  line-height: 1.65 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 12px 14px !important;
+}
+
+[data-testid="stTextArea"] textarea::placeholder {
+  color: #7E94B8 !important;
+  font-size: 0.88rem !important;
+  font-style: italic !important;
+  opacity: 0.85 !important;
+}
+
+/* UPLOADER */
+[data-testid="stFileUploaderDropzone"] {
+  background: linear-gradient(135deg, rgba(0, 255, 163, 0.04) 0%, rgba(180, 77, 255, 0.03) 100%) !important;
+  border: 2px dashed rgba(0, 255, 163, 0.38) !important;
+  border-radius: 14px !important;
+  padding: 1.4rem !important;
+  transition: all 0.3s ease !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+[data-testid="stFileUploaderDropzone"]:hover {
+  background: rgba(0, 255, 163, 0.08) !important;
+  border-color: #00FFA3 !important;
+  box-shadow: 0 0 25px rgba(0, 255, 163, 0.22) !important;
+  transform: translateY(-2px);
 }
 
 /* =====================================================
-   7.  CTA BUTTON
+   6. PRIMARY CALL-TO-ACTION BUTTON
    ===================================================== */
 div.stButton > button[kind="primary"] {
-  position: relative; border-radius: var(--radius-sm); font-family: var(--font); font-weight: 800;
-  font-size: 0.96rem; letter-spacing: 0.015em; padding: 0.92rem 1.5rem;
-  border: 1px solid rgba(0,255,163,0.45) !important; color: var(--mint) !important;
-  background: rgba(0,255,163,0.06) !important;
-  box-shadow: 0 0 0 1px rgba(0,255,163,0.12) inset, 0 4px 20px rgba(0,255,163,0.08);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); animation: btnPulse 3.5s ease-in-out infinite; overflow: hidden;
+  width: 100% !important;
+  border-radius: 14px !important;
+  font-family: var(--font) !important;
+  font-weight: 900 !important;
+  font-size: 1.05rem !important;
+  letter-spacing: 0.03em !important;
+  padding: 0.95rem 1.8rem !important;
+  border: none !important;
+  color: #040814 !important;
+  background: linear-gradient(135deg, #00FFA3 0%, #00D68A 50%, #00FFA3 100%) !important;
+  background-size: 200% auto !important;
+  box-shadow: 0 0 28px rgba(0, 255, 163, 0.45), 0 4px 18px rgba(0, 0, 0, 0.5) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  text-transform: uppercase !important;
 }
-@keyframes btnPulse {
-  0%, 100% { box-shadow: 0 0 0 1px rgba(0,255,163,0.12) inset, 0 4px 20px rgba(0,255,163,0.08); }
-  50%       { box-shadow: 0 0 0 1px rgba(0,255,163,0.22) inset, 0 6px 32px rgba(0,255,163,0.18), 0 0 60px rgba(0,255,163,0.06); }
-}
-div.stButton > button[kind="primary"]::before {
-  content: ''; position: absolute; top: 0; left: -80%; width: 50%; height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(0,255,163,0.12), transparent);
-  transform: skewX(-22deg); transition: left 0.65s ease;
-}
+
 div.stButton > button[kind="primary"]:hover {
-  background: rgba(0,255,163,0.10) !important; border-color: rgba(0,255,163,0.70) !important;
-  transform: translateY(-2px); box-shadow: 0 0 0 1px rgba(0,255,163,0.30) inset, 0 10px 40px rgba(0,255,163,0.20), 0 0 80px rgba(0,255,163,0.08) !important;
-  color: #CAFFEC !important;
+  background-position: right center !important;
+  transform: translateY(-2px) scale(1.01) !important;
+  box-shadow: 0 0 40px rgba(0, 255, 163, 0.65), 0 8px 25px rgba(0, 0, 0, 0.6) !important;
+  color: #02050D !important;
 }
-div.stButton > button[kind="primary"]:hover::before { left: 130%; }
-div.stButton > button[kind="primary"]:active { transform: translateY(0) scale(0.99); }
 
 /* =====================================================
-   8.  ONBOARDING STEPS
+   7. ONBOARDING & HOW IT WORKS (RIGHT COLUMN)
    ===================================================== */
-.onboarding { padding: 2rem 0 0; }
-.onboarding-title { font-weight: 800; font-size: 1.2rem; color: var(--text); margin-bottom: 1.4rem; display: flex; align-items: center; gap: 10px; }
-.onboarding-steps { display: flex; flex-direction: column; gap: 14px; }
+.ob-title {
+  font-size: 1.25rem;
+  font-weight: 900;
+  color: #FFFFFF;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
 .ob-step {
-  display: flex; align-items: flex-start; gap: 16px; padding: 16px 18px; border-radius: var(--radius-sm);
-  background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.055);
-  transition: all 0.3s ease; animation: fadeSlideUp 0.5s ease-out both;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  margin-bottom: 12px;
+  transition: all 0.25s ease;
 }
-.ob-step:nth-child(1) { animation-delay: 0.08s; }
-.ob-step:nth-child(2) { animation-delay: 0.18s; }
-.ob-step:nth-child(3) { animation-delay: 0.28s; }
-.ob-step:hover { background: rgba(0,255,163,0.03); border-color: rgba(0,255,163,0.12); transform: translateX(4px); }
+.ob-step:hover {
+  background: rgba(0, 255, 163, 0.04);
+  border-color: rgba(0, 255, 163, 0.25);
+  transform: translateX(4px);
+}
 .ob-num {
-  width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 0.85rem; flex-shrink: 0; color: #060914;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: 0.90rem;
+  flex-shrink: 0;
+  color: #040814;
 }
-.ob-num-1 { background: linear-gradient(135deg, #00FFA3, #00CC84); }
-.ob-num-2 { background: linear-gradient(135deg, #B44DFF, #8A2BE2); }
-.ob-num-3 { background: linear-gradient(135deg, #FF4060, #CC2040); }
-.ob-step-content { flex: 1; }
-.ob-step-title { font-weight: 700; color: var(--text); font-size: 0.92rem; margin-bottom: 3px; }
-.ob-step-desc  { color: var(--muted); font-size: 0.84rem; line-height: 1.55; }
-.ob-tip {
-  margin-top: 1.5rem; padding: 14px 18px; border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, rgba(0,255,163,0.05), rgba(180,77,255,0.03));
-  border: 1px solid rgba(0,255,163,0.14); border-left: 3px solid var(--mint);
-  display: flex; align-items: flex-start; gap: 10px; animation: fadeSlideUp 0.5s ease-out 0.42s both;
-}
-.ob-tip-icon  { font-size: 1.1rem; flex-shrink: 0; margin-top: 1px; }
-.ob-tip-text  { color: var(--muted); font-size: 0.84rem; line-height: 1.55; }
-.ob-tip-text strong { color: var(--mint); }
+.ob-num-1 { background: linear-gradient(135deg, #00FFA3, #00CC84); box-shadow: 0 0 15px rgba(0, 255, 163, 0.35); }
+.ob-num-2 { background: linear-gradient(135deg, #B44DFF, #8A2BE2); box-shadow: 0 0 15px rgba(180, 77, 255, 0.35); }
+.ob-num-3 { background: linear-gradient(135deg, #FF4060, #CC2040); box-shadow: 0 0 15px rgba(255, 64, 96, 0.35); }
 
-@keyframes fadeSlideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+.ob-step-title {
+  font-weight: 800;
+  color: #FFFFFF;
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+}
+.ob-step-desc {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.feature-pill-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 14px;
+}
+.feature-pill {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-family: var(--mono);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: #E2E8F0;
+}
+
+.ob-tip-box {
+  margin-top: 16px;
+  padding: 14px 18px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgba(255, 184, 0, 0.06), rgba(0, 255, 163, 0.03));
+  border: 1px solid rgba(255, 184, 0, 0.25);
+  border-left: 4px solid var(--amber);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ob-tip-box strong {
+  color: var(--amber);
+}
 
 /* =====================================================
-   9.  SCORE GAUGE
+   8. SCORE GAUGE & DASHBOARD STATS
    ===================================================== */
-.score-section { display: flex; flex-direction: column; align-items: center; margin: 8px 0 22px; animation: fadeSlideUp 0.6s ease-out both; }
-.score-ring-wrap { position: relative; width: 164px; height: 164px; }
-.score-ring-wrap svg { transform: rotate(-90deg); width: 164px; height: 164px; }
-.score-ring-bg   { fill: none; stroke: rgba(255,255,255,0.055); stroke-width: 10; }
+.score-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 10px 0 20px;
+}
+.score-ring-wrap {
+  position: relative;
+  width: 170px;
+  height: 170px;
+}
+.score-ring-wrap svg {
+  transform: rotate(-90deg);
+  width: 170px;
+  height: 170px;
+}
+.score-ring-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.06);
+  stroke-width: 11;
+}
 .score-ring-fill {
-  fill: none; stroke-width: 10; stroke-linecap: round;
+  fill: none;
+  stroke-width: 11;
+  stroke-linecap: round;
   transition: stroke-dashoffset 1.6s cubic-bezier(0.4, 0, 0.2, 1);
-  filter: drop-shadow(0 0 9px var(--ring-color));
+  filter: drop-shadow(0 0 10px var(--ring-color));
 }
-.score-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.score-value { font-family: var(--mono); font-weight: 800; font-size: 2.5rem; line-height: 1; letter-spacing: -0.02em; }
-.score-label { font-size: 0.70rem; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
-.score-ring-glow {
-  position: absolute; width: 120px; height: 120px; border-radius: 50%; top: 50%; left: 50%;
-  transform: translate(-50%, -50%); animation: scoreGlow 3s ease-in-out infinite; pointer-events: none;
+.score-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
-@keyframes scoreGlow { 0%, 100% { opacity: 0.35; transform: translate(-50%,-50%) scale(1); } 50% { opacity: 0.65; transform: translate(-50%,-50%) scale(1.12); } }
-.score-elapsed { margin-top: 10px; font-size: 0.76rem; color: var(--dimmed); font-family: var(--mono); font-weight: 500; }
+.score-value {
+  font-family: var(--mono);
+  font-weight: 900;
+  font-size: 2.8rem;
+  line-height: 1;
+}
+.score-label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.score-elapsed {
+  margin-top: 8px;
+  font-size: 0.78rem;
+  color: var(--dimmed);
+  font-family: var(--mono);
+}
+
+.stats-row {
+  display: flex;
+  gap: 12px;
+  margin: 16px 0 22px;
+}
+.stat-card {
+  flex: 1;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+}
+.stat-value {
+  font-family: var(--mono);
+  font-weight: 900;
+  font-size: 1.4rem;
+}
+.stat-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 4px;
+}
 
 /* =====================================================
-   10. TAB STYLING
+   9. RESULT TABS & CARDS
    ===================================================== */
 [data-baseweb="tab-list"] {
-  border: 1px solid rgba(255,255,255,0.055) !important; border-radius: 14px !important; padding: 5px !important;
-  background: rgba(255,255,255,0.02) !important; backdrop-filter: blur(12px); gap: 4px !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 14px !important;
+  padding: 5px !important;
+  background: rgba(255, 255, 255, 0.02) !important;
+  gap: 6px !important;
 }
 [data-baseweb="tab"] {
-  color: var(--dimmed) !important; background: transparent !important; border-radius: 10px !important;
-  font-weight: 600 !important; font-size: 0.82rem !important; padding: 8px 14px !important; transition: all 0.25s ease !important;
+  color: var(--muted) !important;
+  background: transparent !important;
+  border-radius: 10px !important;
+  font-weight: 700 !important;
+  font-size: 0.86rem !important;
+  padding: 8px 16px !important;
+  transition: all 0.25s ease !important;
 }
-[data-baseweb="tab"]:hover { color: var(--muted) !important; background: rgba(255,255,255,0.03) !important; }
 [data-baseweb="tab"][aria-selected="true"] {
-  color: var(--mint) !important; background: rgba(0,255,163,0.08) !important; box-shadow: 0 0 0 1px rgba(0,255,163,0.22) inset !important;
+  color: #040814 !important;
+  background: var(--mint) !important;
+  box-shadow: 0 0 15px rgba(0, 255, 163, 0.4) !important;
 }
 [data-baseweb="tab-highlight"], [data-baseweb="tab-border"] { display: none !important; }
 
-/* =====================================================
-   11. SCROLLABLE CARD CONTAINER
-   ===================================================== */
-.result-scroll { max-height: 520px; overflow-y: auto; padding: 4px 2px; scroll-behavior: smooth; }
+.tab-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.tab-header-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+.tab-header-icon.gaps { background: rgba(255, 64, 96, 0.12); border: 1px solid rgba(255, 64, 96, 0.25); }
+.tab-header-icon.imps { background: rgba(0, 255, 163, 0.12); border: 1px solid rgba(0, 255, 163, 0.25); }
+.tab-header-icon.prep { background: rgba(180, 77, 255, 0.12); border: 1px solid rgba(180, 77, 255, 0.25); }
+.tab-header-title { font-weight: 800; font-size: 1.05rem; color: #FFFFFF; }
+.tab-header-count {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 2px 10px;
+  border-radius: 6px;
+  color: var(--mint);
+  background: rgba(0, 255, 163, 0.1);
+  border: 1px solid rgba(0, 255, 163, 0.2);
+}
+
+.result-scroll { max-height: 540px; overflow-y: auto; padding: 4px; }
 .result-scroll::-webkit-scrollbar { width: 5px; }
-.result-scroll::-webkit-scrollbar-track { background: transparent; }
-.result-scroll::-webkit-scrollbar-thumb { background: rgba(0,255,163,0.22); border-radius: 999px; }
-.result-scroll::-webkit-scrollbar-thumb:hover { background: rgba(0,255,163,0.40); }
+.result-scroll::-webkit-scrollbar-thumb { background: rgba(0, 255, 163, 0.25); border-radius: 999px; }
 
-/* =====================================================
-   12. GAP CARDS
-   ===================================================== */
+/* GAP CARD */
 .gap-card {
-  padding: 12px 16px; border-radius: var(--radius-sm); background: rgba(255,255,255,0.018); border: 1px solid rgba(255,255,255,0.055);
-  border-left: 4px solid; margin-bottom: 10px; transition: all 0.25s ease; animation: fadeSlideUp 0.4s ease-out both;
+  padding: 14px 18px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 4px solid;
+  margin-bottom: 12px;
+  transition: all 0.25s ease;
 }
-.gap-card:hover { background: rgba(255,255,255,0.03); transform: translateX(4px); box-shadow: 0 4px 24px rgba(0,0,0,0.18); }
-.gap-card.severity-high { border-left-color: #FF4060; } .gap-card.severity-med { border-left-color: #FFB800; } .gap-card.severity-low { border-left-color: #00FFA3; }
-.gap-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.gap-badge { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; font-weight: 800; font-size: 0.72rem; flex-shrink: 0; }
-.gap-badge-high { background: rgba(255,64,96,0.12); color: #FF4060; border: 1px solid rgba(255,64,96,0.22); }
-.gap-badge-med  { background: rgba(255,184,0,0.12); color: #FFB800; border: 1px solid rgba(255,184,0,0.22); }
-.gap-badge-low  { background: rgba(0,255,163,0.10); color: #00FFA3; border: 1px solid rgba(0,255,163,0.20); }
-.gap-skill-name { font-weight: 800; font-size: 0.92rem; color: var(--text); letter-spacing: -0.01em; }
-.gap-body { color: var(--muted); font-size: 0.85rem; line-height: 1.5; padding-left: 32px; white-space: normal; }
-.gap-jd-req { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: rgba(0,255,163,0.05); border: 1px solid rgba(0,255,163,0.14); font-size: 0.80rem; color: #A8FFD8; }
-.jd-req-label { font-weight: 700; color: var(--mint); }
+.gap-card:hover {
+  background: rgba(255, 255, 255, 0.035);
+  transform: translateX(4px);
+}
+.gap-card.severity-high { border-left-color: #FF4060; }
+.gap-card.severity-med  { border-left-color: #FFB800; }
+.gap-card.severity-low  { border-left-color: #00FFA3; }
+.gap-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.gap-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 7px; font-weight: 900; font-size: 0.75rem;
+}
+.gap-badge-high { background: rgba(255, 64, 96, 0.15); color: #FF4060; border: 1px solid rgba(255, 64, 96, 0.3); }
+.gap-badge-med  { background: rgba(255, 184, 0, 0.15); color: #FFB800; border: 1px solid rgba(255, 184, 0, 0.3); }
+.gap-badge-low  { background: rgba(0, 255, 163, 0.15); color: #00FFA3; border: 1px solid rgba(0, 255, 163, 0.3); }
+.gap-skill-name { font-weight: 800; font-size: 0.98rem; color: #FFFFFF; }
+.gap-body { color: var(--muted); font-size: 0.88rem; line-height: 1.55; padding-left: 36px; }
+.gap-jd-req {
+  margin-top: 8px; padding: 7px 12px; border-radius: 7px;
+  background: rgba(0, 255, 163, 0.05); border: 1px solid rgba(0, 255, 163, 0.18);
+  font-size: 0.82rem; color: #A8FFD8;
+}
 
-/* =====================================================
-   13. IMPROVEMENT CARDS
-   ===================================================== */
+/* IMPROVEMENT CARD */
 .imp-card {
-  display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; border-radius: var(--radius-sm);
-  background: rgba(255,255,255,0.018); border: 1px solid rgba(255,255,255,0.055); margin-bottom: 10px; transition: all 0.25s ease; animation: fadeSlideUp 0.4s ease-out both;
+  display: flex; gap: 14px; align-items: flex-start; padding: 14px 18px;
+  border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06); margin-bottom: 12px;
+  transition: all 0.25s ease;
 }
-.imp-card:hover { background: rgba(0,255,163,0.025); border-color: rgba(0,255,163,0.14); transform: translateX(4px); }
-.imp-check { width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: rgba(0,255,163,0.08); border: 1px solid rgba(0,255,163,0.22); color: var(--mint); font-size: 0.80rem; font-weight: 800; flex-shrink: 0; }
-.imp-content { flex: 1; }
-.imp-num { font-weight: 800; font-size: 0.74rem; color: var(--mint); font-family: var(--mono); letter-spacing: 0.03em; margin-bottom: 2px; }
-.imp-text { color: var(--text); font-size: 0.88rem; line-height: 1.5; white-space: normal; font-weight: 500; }
+.imp-card:hover {
+  background: rgba(0, 255, 163, 0.03); border-color: rgba(0, 255, 163, 0.2);
+  transform: translateX(4px);
+}
+.imp-check {
+  width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 255, 163, 0.10); border: 1px solid rgba(0, 255, 163, 0.3);
+  color: var(--mint); font-weight: 900; font-size: 0.85rem; flex-shrink: 0;
+}
+.imp-num { font-weight: 900; font-size: 0.78rem; color: var(--mint); font-family: var(--mono); }
+.imp-text { color: #FFFFFF; font-size: 0.92rem; font-weight: 600; line-height: 1.5; margin: 4px 0; }
 
-/* =====================================================
-   14. PREPARATION TIMELINE
-   ===================================================== */
-.timeline { position: relative; padding-left: 22px; }
-.timeline::before { content: ''; position: absolute; left: 9px; top: 18px; bottom: 18px; width: 2px; background: linear-gradient(180deg, rgba(180,77,255,0.45) 0%, rgba(180,77,255,0.06) 100%); border-radius: 999px; }
-.prep-card { position: relative; padding: 12px 16px; border-radius: var(--radius-sm); background: rgba(255,255,255,0.018); border: 1px solid rgba(255,255,255,0.055); margin-bottom: 12px; margin-left: 16px; transition: all 0.25s ease; animation: fadeSlideUp 0.4s ease-out both; }
-.prep-card:hover { background: rgba(180,77,255,0.03); border-color: rgba(180,77,255,0.16); transform: translateX(4px); }
-.prep-dot { position: absolute; left: -25px; top: 16px; width: 12px; height: 12px; border-radius: 50%; background: var(--violet); border: 3px solid var(--bg1); box-shadow: 0 0 0 3px rgba(180,77,255,0.22); }
-.prep-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.prep-num { font-family: var(--mono); font-weight: 700; font-size: 0.72rem; color: var(--violet); padding: 2px 8px; border-radius: 6px; background: rgba(180,77,255,0.10); border: 1px solid rgba(180,77,255,0.20); }
-.prep-gap-title { font-weight: 800; font-size: 0.90rem; color: #E0CCFF; letter-spacing: -0.01em; }
-.prep-text { color: var(--muted); font-size: 0.85rem; line-height: 1.5; white-space: normal; }
-.prep-sections { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-.prep-sec { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 6px; background: rgba(255,255,255,0.018); border: 1px solid rgba(255,255,255,0.045); }
-.prep-tag { display: inline-block; font-size: 0.68rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: fit-content; padding: 2px 6px; border-radius: 4px; }
-.tag-study    { background: rgba(56,189,248,0.12); color: #38BDF8; }
-.tag-practice { background: rgba(0,255,163,0.10); color: #00FFA3; }
-.tag-angle    { background: rgba(255,184,0,0.12); color: #FFB800; }
-.prep-sec-text { font-size: 0.86rem; color: var(--muted); line-height: 1.55; }
+/* PREPARATION TIMELINE */
+.prep-card {
+  padding: 14px 18px; border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06);
+  margin-bottom: 14px; transition: all 0.25s ease;
+}
+.prep-card:hover {
+  background: rgba(180, 77, 255, 0.04); border-color: rgba(180, 77, 255, 0.25);
+  transform: translateX(4px);
+}
+.prep-num {
+  font-family: var(--mono); font-weight: 800; font-size: 0.75rem; color: var(--violet);
+  padding: 3px 9px; border-radius: 6px; background: rgba(180, 77, 255, 0.12);
+  border: 1px solid rgba(180, 77, 255, 0.25);
+}
+.prep-gap-title { font-weight: 800; font-size: 0.95rem; color: #E4D5FF; }
+.prep-sec {
+  display: flex; flex-direction: column; gap: 3px; padding: 9px 12px;
+  border-radius: 7px; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05);
+  margin-top: 6px;
+}
+.prep-tag {
+  display: inline-block; font-size: 0.70rem; font-weight: 800; text-transform: uppercase;
+  letter-spacing: 0.06em; padding: 2px 7px; border-radius: 4px; width: fit-content;
+}
+.tag-study    { background: rgba(56, 189, 248, 0.14); color: #38BDF8; }
+.tag-practice { background: rgba(0, 255, 163, 0.12); color: #00FFA3; }
+.tag-angle    { background: rgba(255, 184, 0, 0.14); color: #FFB800; }
+.prep-sec-text { font-size: 0.88rem; color: var(--muted); line-height: 1.55; }
 
-/* STAGGERED ANIMATION DELAYS */
-.gap-card:nth-child(1),.imp-card:nth-child(1),.prep-card:nth-child(1) { animation-delay:0.04s; }
-.gap-card:nth-child(2),.imp-card:nth-child(2),.prep-card:nth-child(2) { animation-delay:0.10s; }
-.gap-card:nth-child(3),.imp-card:nth-child(3),.prep-card:nth-child(3) { animation-delay:0.16s; }
-.gap-card:nth-child(4),.imp-card:nth-child(4),.prep-card:nth-child(4) { animation-delay:0.22s; }
-
-/* DIVIDER */
-hr { border: none !important; height: 1px !important; background: linear-gradient(90deg, transparent, rgba(0,255,163,0.12), transparent) !important; margin: 1.2rem 0 !important; }
-
-/* EMPTY STATE */
-.empty-state { text-align: center; padding: 2.5rem 1rem; color: var(--dimmed); }
-.empty-state-icon { font-size: 2rem; margin-bottom: 8px; opacity: 0.45; }
-.empty-state-text { font-size: 0.88rem; }
-
-/* LOADING ANIMATION */
-.loading-container { display: flex; flex-direction: column; align-items: center; padding: 3.5rem 1rem; animation: fadeSlideUp 0.5s ease-out both; }
-.loading-spinner { width: 58px; height: 58px; border-radius: 50%; border: 3px solid rgba(0,255,163,0.08); border-top-color: var(--mint); border-right-color: var(--violet); animation: spin 0.9s linear infinite; margin-bottom: 1.5rem; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.loading-text  { font-size: 0.94rem; font-weight: 600; color: var(--text); margin-bottom: 6px; }
-.loading-sub   { font-size: 0.8rem; color: var(--dimmed); font-family: var(--mono); }
-.loading-stages { display: flex; flex-direction: column; gap: 10px; margin-top: 1.6rem; width: 100%; max-width: 340px; }
-.loading-stage { display: flex; align-items: center; gap: 10px; font-size: 0.8rem; padding: 9px 13px; border-radius: 9px; background: rgba(255,255,255,0.018); border: 1px solid rgba(255,255,255,0.05); animation: fadeSlideUp 0.4s ease-out both; }
-.loading-stage:nth-child(1) { animation-delay: 0.0s; } .loading-stage:nth-child(2) { animation-delay: 0.25s; } .loading-stage:nth-child(3) { animation-delay: 0.5s; } .loading-stage:nth-child(4) { animation-delay: 0.75s; }
-.stage-dot { width: 8px; height: 8px; border-radius: 50%; }
-.stage-text { color: var(--muted); font-family: var(--mono); font-weight: 500; }
-
-/* TAB SECTION HEADERS */
-.tab-header { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; padding-bottom: 13px; border-bottom: 1px solid rgba(255,255,255,0.045); }
-.tab-header-icon { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1rem; }
-.tab-header-icon.gaps { background: rgba(255,64,96,0.10); border: 1px solid rgba(255,64,96,0.18); }
-.tab-header-icon.imps { background: rgba(0,255,163,0.10); border: 1px solid rgba(0,255,163,0.18); }
-.tab-header-icon.prep { background: rgba(180,77,255,0.10); border: 1px solid rgba(180,77,255,0.18); }
-.tab-header-title { font-weight: 700; font-size: 0.96rem; color: var(--text); }
-.tab-header-count { font-family: var(--mono); font-size: 0.72rem; font-weight: 700; padding: 2px 9px; border-radius: 6px; color: var(--muted); background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.055); }
-
-/* STREAMLIT-SPECIFIC OVERRIDES */
-[data-testid="stApp"] { background: var(--bg1) !important; }
-[data-testid="column"] { background: transparent !important; }
-[data-testid="stMainBlockContainer"], .main .block-container { background: transparent !important; max-width: 1400px !important; padding-left: 2rem !important; padding-right: 2rem !important; }
-[data-testid="stTextArea"] > div > div { background: rgba(255,255,255,0.022) !important; border: 1px solid rgba(255,255,255,0.08) !important; border-radius: 12px !important; }
-[data-testid="stTextArea"] textarea { background: transparent !important; border: none !important; box-shadow: none !important; }
-[data-testid="stTextArea"] textarea:focus { border: none !important; box-shadow: none !important; }
-[data-testid="stFileUploader"] { background: transparent !important; }
-[data-testid="stFileUploaderDropzone"] { background: rgba(0,255,163,0.025) !important; border: 2px dashed rgba(0,255,163,0.25) !important; border-radius: 12px !important; }
-[data-testid="stFileUploaderDropzone"]:hover { background: rgba(0,255,163,0.05) !important; border-color: rgba(0,255,163,0.50) !important; }
-[data-testid="stDivider"] hr { border-color: rgba(255,255,255,0.06) !important; }
-[data-testid="stAlert"] { background: rgba(255,64,96,0.06) !important; border: 1px solid rgba(255,64,96,0.22) !important; border-radius: 12px !important; color: #FFB3BE !important; }
-
-/* Sidebar Styling */
-[data-testid="stSidebar"] { background: linear-gradient(180deg, #0A0F1F 0%, #060914 100%) !important; border-right: 1px solid rgba(255,255,255,0.06) !important; }
-
-/* Keyword Heatmap */
+/* KEYWORD HEATMAP */
 .keyword-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-.kw-chip { padding: 6px 12px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; font-family: var(--mono); transition: all 0.2s ease; }
-.kw-found { background: rgba(0,255,163,0.12); color: #00FFA3; border: 1px solid rgba(0,255,163,0.25); }
-.kw-missing { background: rgba(255,64,96,0.10); color: #FF4060; border: 1px solid rgba(255,64,96,0.20); }
-.kw-chip:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+.kw-chip {
+  padding: 6px 14px; border-radius: 20px; font-size: 0.80rem; font-weight: 700;
+  font-family: var(--mono); transition: all 0.2s ease;
+}
+.kw-found {
+  background: rgba(0, 255, 163, 0.14); color: #00FFA3; border: 1.5px solid rgba(0, 255, 163, 0.35);
+}
+.kw-missing {
+  background: rgba(255, 64, 96, 0.12); color: #FF4060; border: 1.5px solid rgba(255, 64, 96, 0.25);
+}
 
-/* Feedback Buttons */
-.feedback-row { display: flex; gap: 8px; margin-top: 8px; }
-.fb-btn { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s; }
-.fb-btn:hover { background: rgba(255,255,255,0.08); }
-.fb-btn.active-up { background: rgba(0,255,163,0.15); border-color: rgba(0,255,163,0.3); }
-.fb-btn.active-down { background: rgba(255,64,96,0.15); border-color: rgba(255,64,96,0.3); }
-
-/* History Table */
-.history-card { padding: 14px 18px; border-radius: var(--radius-sm); background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); margin-bottom: 10px; transition: all 0.25s; cursor: pointer; }
-.history-card:hover { background: rgba(0,255,163,0.03); border-color: rgba(0,255,163,0.15); transform: translateX(4px); }
-.history-score { font-family: var(--mono); font-weight: 800; font-size: 1.4rem; }
+/* HISTORY CARDS */
+.history-card {
+  padding: 16px 20px; border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(255, 255, 255, 0.07);
+  margin-bottom: 12px; transition: all 0.25s;
+}
+.history-card:hover {
+  background: rgba(0, 255, 163, 0.035); border-color: rgba(0, 255, 163, 0.25);
+  transform: translateX(4px);
+}
+.history-score { font-family: var(--mono); font-weight: 900; font-size: 1.6rem; }
+.history-filename { color: #FFFFFF; font-weight: 700; font-size: 0.96rem; margin-bottom: 3px; }
 .history-meta { color: var(--muted); font-size: 0.82rem; }
-.history-filename { color: var(--text); font-weight: 600; font-size: 0.9rem; }
 
-/* Download Button */
-.download-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; border-radius: 10px; background: linear-gradient(135deg, rgba(0,255,163,0.15), rgba(0,255,163,0.05)); border: 1px solid rgba(0,255,163,0.25); color: #00FFA3; font-weight: 700; font-size: 0.88rem; cursor: pointer; transition: all 0.3s; text-decoration: none; }
-.download-btn:hover { background: linear-gradient(135deg, rgba(0,255,163,0.25), rgba(0,255,163,0.10)); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,255,163,0.15); }
+/* SIDEBAR STYLING */
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #090E20 0%, #050814 100%) !important;
+  border-right: 1px solid rgba(0, 255, 163, 0.12) !important;
+}
 
-/* Stats Row */
-.stats-row { display: flex; gap: 12px; margin: 16px 0; }
-.stat-card { flex: 1; padding: 14px 16px; border-radius: var(--radius-sm); background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); text-align: center; }
-.stat-value { font-family: var(--mono); font-weight: 800; font-size: 1.3rem; }
-.stat-label { color: var(--muted); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 4px; }
+/* LOADING CONTAINER */
+.loading-container { display: flex; flex-direction: column; align-items: center; padding: 3.5rem 1rem; }
+.loading-spinner {
+  width: 60px; height: 60px; border-radius: 50%;
+  border: 3px solid rgba(0, 255, 163, 0.1);
+  border-top-color: var(--mint); border-right-color: var(--violet);
+  animation: spin 0.9s linear infinite; margin-bottom: 1.5rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { font-size: 1rem; font-weight: 700; color: #FFFFFF; margin-bottom: 6px; }
+.loading-sub  { font-size: 0.82rem; color: var(--muted); font-family: var(--mono); }
 </style>
 """
 
 st.markdown(STYLES, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Session State Init
+# Session State Management
 # ---------------------------------------------------------------------------
 if "page" not in st.session_state:
     st.session_state.page = "analysis"
@@ -517,94 +720,291 @@ if "out" not in st.session_state:
     st.session_state.out = None
 if "error" not in st.session_state:
     st.session_state.error = None
+if "sample_jd" not in st.session_state:
+    st.session_state.sample_jd = ""
 
 # ---------------------------------------------------------------------------
-# Sidebar
+# Sidebar (Always Re-openable & Informative)
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown('<div style="text-align:center;padding:20px 0 10px"><div style="font-size:1.6rem;font-weight:900;background:linear-gradient(135deg,#00FFA3,#38BDF8);-webkit-background-clip:text;-webkit-text-fill-color:transparent">🤖 Resume Analyzer</div><div style="color:var(--muted);font-size:0.78rem;margin-top:4px">v2.0 · Powered by AI</div></div>', unsafe_allow_html=True)
-    st.markdown('---')
-    
-    if st.button("🔬 New Analysis", use_container_width=True, type="primary" if st.session_state.page == "analysis" else "secondary"):
+    st.markdown(
+        """
+        <div style="text-align:center; padding: 18px 0 10px;">
+          <div style="font-size: 1.65rem; font-weight: 900; background: linear-gradient(135deg, #00FFA3, #38BDF8); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🤖 Resume AI
+          </div>
+          <div style="color: #8899B4; font-size: 0.78rem; margin-top: 4px; font-weight: 600;">
+            Agentic Resume & JD Matcher
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
+    st.markdown("<div style='font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.08em; color: #506282; font-weight: 800; margin-bottom: 8px;'>Navigation</div>", unsafe_allow_html=True)
+    if st.button("🔬  New Resume Analysis", use_container_width=True, type="primary" if st.session_state.page == "analysis" else "secondary"):
         st.session_state.page = "analysis"
         st.rerun()
-    if st.button("📊 History & Trends", use_container_width=True, type="primary" if st.session_state.page == "history" else "secondary"):
+
+    if st.button("📊  Analysis History & Trends", use_container_width=True, type="primary" if st.session_state.page == "history" else "secondary"):
         st.session_state.page = "history"
         st.rerun()
-    
-    st.markdown('---')
-    
-    # System Status
+
+    st.divider()
+
+    # System Status Indicator
     try:
-        health = requests.get(f"{BACKEND_URL}/health", timeout=3).json()
-        status_color = '#00FFA3' if health.get('ollama_reachable') else '#FF4060'
-        status_text = 'Online' if health.get('ollama_reachable') else 'Offline'
-        st.markdown(f'<div style="padding:10px;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06)"><div style="display:flex;align-items:center;gap:8px"><div style="width:8px;height:8px;border-radius:50%;background:{status_color}"></div><span style="color:var(--muted);font-size:0.8rem">Ollama: {status_text}</span></div><div style="color:var(--dimmed);font-size:0.72rem;margin-top:6px">Model: {health.get("model", "unknown")}</div></div>', unsafe_allow_html=True)
+        health = requests.get(f"{BACKEND_URL}/health", timeout=2.5).json()
+        status_color = "#00FFA3" if health.get("ollama_reachable") else "#FF4060"
+        status_text = "Connected (Ready)" if health.get("ollama_reachable") else "Ollama Offline"
+        st.markdown(
+            f"""
+            <div style="padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06);">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <div style="width:8px; height:8px; border-radius:50%; background:{status_color}; box-shadow: 0 0 10px {status_color};"></div>
+                <span style="color: #EDF2FF; font-size: 0.82rem; font-weight: 700;">Local AI Engine: {status_text}</span>
+              </div>
+              <div style="color: #8899B4; font-size: 0.74rem; margin-top: 6px; font-family: var(--mono);">
+                Model: {health.get("model", "qwen2.5:3b")}
+              </div>
+              <div style="color: #506282; font-size: 0.70rem; margin-top: 4px;">
+                Embeddings: all-MiniLM-L6-v2
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     except Exception:
-        st.markdown('<div style="padding:10px;border-radius:8px;background:rgba(255,64,96,0.05);border:1px solid rgba(255,64,96,0.15)"><div style="color:#FF4060;font-size:0.8rem">⚠️ Backend offline</div></div>', unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div style="padding: 12px; border-radius: 10px; background: rgba(255,64,96,0.05); border: 1px solid rgba(255,64,96,0.2);">
+              <div style="color: #FF4060; font-size: 0.82rem; font-weight: 700;">⚠️ Backend Server Not Detected</div>
+              <div style="color: #8899B4; font-size: 0.72rem; margin-top: 4px;">Run `uvicorn backend.server:app --port 8000`</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 # ---------------------------------------------------------------------------
-# Functions
+# View 1: New Resume Analysis
 # ---------------------------------------------------------------------------
 def render_analysis_page():
-    st.markdown('<div class="hero-container"><h1 class="hero-title">Agentic Resume Analyzer</h1><div class="hero-subtitle"><span class="hero-badge">LOCAL</span>Ollama · LangGraph · ChromaDB · sentence-transformers — no API keys needed</div></div>', unsafe_allow_html=True)
+    # Hero Title
+    st.markdown(
+        """
+        <div class="hero-container">
+          <h1 class="hero-title">Agentic Resume Analyzer</h1>
+          <div class="hero-subtitle">
+            <span class="hero-badge">⚡ 100% PRIVATE & LOCAL</span>
+            Ollama · LangGraph · ChromaDB RAG · sentence-transformers
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Top Navigation Switcher on Page
+    col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
+    with col_nav2:
+        nav_mode = st.radio(
+            "Page Switcher",
+            ["🔬 New Resume Analysis", "📊 History & Analytics"],
+            horizontal=True,
+            label_visibility="collapsed",
+            index=0 if st.session_state.page == "analysis" else 1,
+            key="top_nav_radio",
+        )
+        if nav_mode == "📊 History & Analytics" and st.session_state.page != "history":
+            st.session_state.page = "history"
+            st.rerun()
+
+    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 
     col_left, col_right = st.columns([2, 3], gap="large")
 
+    # ── Left Column: Inputs ──────────────────────────────────────────────
     with col_left:
-        st.markdown('<div class="premium-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-label"><span class="label-icon label-icon-jd">📋</span>Job Description</div>', unsafe_allow_html=True)
-        job_description = st.text_area("Job Description", height=240, placeholder="Paste the full Job Description here — skills, tools, responsibilities…", label_visibility="collapsed")
-        st.divider()
-        st.markdown('<div class="section-label"><span class="label-icon label-icon-pdf">📄</span>Resume PDF</div>', unsafe_allow_html=True)
-        resume_file = st.file_uploader("Resume PDF", type=["pdf"], accept_multiple_files=False, help="Upload a PDF resume. Everything runs 100% locally on your machine.", label_visibility="collapsed")
-        st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
-        submitted = st.button("🚀  Analyze Resume", type="primary", use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        # Step 1: Job Description Card Header
+        st.markdown(
+            """
+            <div class="card-header-bar">
+              <div class="card-header-title">
+                <span style="font-size: 1.25rem;">📋</span> Target Job Description
+              </div>
+              <span class="card-header-badge badge-mint">STEP 1 OF 2</span>
+            </div>
+            <div class="card-subtext">
+              Paste the full job requirements, technical skills, and core responsibilities for deep semantic matching.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
+        # Quick sample JD filler
+        if st.button("✨ Load Sample AI Engineer Job Description", use_container_width=True):
+            st.session_state.sample_jd = (
+                "Role: Senior AI / MLOps Engineer\n"
+                "Requirements:\n"
+                "- 3+ years experience with Python, FastAPI, and asynchronous backend microservices.\n"
+                "- Hands-on production experience building RAG pipelines using LangChain, LangGraph, and Vector Databases (ChromaDB, Pinecone, FAISS).\n"
+                "- Experience fine-tuning and deploying open-source LLMs (Llama, Qwen, Mistral) on AWS SageMaker or GCP.\n"
+                "- Strong software engineering fundamentals: automated testing (pytest), Docker containerization, and CI/CD automation.\n"
+                "- Strong communication skills and cross-functional leadership."
+            )
+
+        job_description = st.text_area(
+            "Job Description",
+            value=st.session_state.sample_jd,
+            height=240,
+            placeholder="Paste the target Job Description here (skills, tools, responsibilities, years of experience)...",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+        # Step 2: Resume PDF Card Header
+        st.markdown(
+            """
+            <div class="card-header-bar">
+              <div class="card-header-title">
+                <span style="font-size: 1.25rem;">📄</span> Candidate Resume (PDF)
+              </div>
+              <span class="card-header-badge badge-sky">STEP 2 OF 2</span>
+            </div>
+            <div class="card-subtext">
+              Upload your PDF resume. Text is chunked, embedded, and analyzed strictly on your local machine.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        resume_file = st.file_uploader(
+            "Resume PDF",
+            type=["pdf"],
+            accept_multiple_files=False,
+            help="Upload your resume in PDF format. 100% on-device processing.",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+
+        submitted = st.button("🚀  Run Agentic Resume Analysis", type="primary", use_container_width=True)
+
+    # ── Right Column: Results & Dashboard ────────────────────────────────
     with col_right:
-        st.markdown('<div class="premium-card">', unsafe_allow_html=True)
-
         if submitted:
             st.session_state.submitted = True
             st.session_state.out = None
             st.session_state.error = None
 
+        # Onboarding state when no analysis is active
         if not st.session_state.submitted:
-            st.markdown('<div class="onboarding"><div class="onboarding-title">✨ How it works</div><div class="onboarding-steps"><div class="ob-step"><div class="ob-num ob-num-1">1</div><div class="ob-step-content"><div class="ob-step-title">Paste the Job Description</div><div class="ob-step-desc">Copy the JD from the job listing — include skills, tools, and requirements for best results.</div></div></div><div class="ob-step"><div class="ob-num ob-num-2">2</div><div class="ob-step-content"><div class="ob-step-title">Upload your Resume</div><div class="ob-step-desc">Drop your resume as a PDF. The AI will parse every section and extract your skills automatically.</div></div></div><div class="ob-step"><div class="ob-num ob-num-3">3</div><div class="ob-step-content"><div class="ob-step-title">Get Instant Analysis</div><div class="ob-step-desc">Receive a match score, identified gaps, actionable improvements, and interview prep — all locally.</div></div></div></div><div class="ob-tip"><div class="ob-tip-icon">💡</div><div class="ob-tip-text"><strong>Pro tip:</strong> Include specific tools, frameworks, and years of experience in the JD for more precise gap detection and targeted improvement suggestions.</div></div></div>', unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown(
+                """
+                <div class="card-box">
+                  <div class="ob-title">
+                    <span>✨</span> Multi-Agent Resume Matching Engine
+                  </div>
+                  <div style="color: #8899B4; font-size: 0.88rem; line-height: 1.55; margin-bottom: 20px;">
+                    This application deploys a local <strong>LangGraph state machine</strong> to perform deep multi-query RAG retrieval against your resume, eliminating keyword hallucinations and generating concrete, actionable career guidance.
+                  </div>
+
+                  <div class="ob-step">
+                    <div class="ob-num ob-num-1">01</div>
+                    <div>
+                      <div class="ob-step-title">Role Target Definition</div>
+                      <div class="ob-step-desc">Extracts core technical proficiencies, required tooling, and expected seniority benchmarks from the target job posting.</div>
+                    </div>
+                  </div>
+
+                  <div class="ob-step">
+                    <div class="ob-num ob-num-2">02</div>
+                    <div>
+                      <div class="ob-step-title">Neural Resume Ingestion (RAG)</div>
+                      <div class="ob-step-desc">Parses your PDF and embeds chunks using MiniLM embeddings into an in-memory ChromaDB vector store with reciprocal rank fusion (RRF).</div>
+                    </div>
+                  </div>
+
+                  <div class="ob-step">
+                    <div class="ob-num ob-num-3">03</div>
+                    <div>
+                      <div class="ob-step-title">Deep Gap Analysis & Action Directives</div>
+                      <div class="ob-step-desc">Evaluates fit, generates past-tense bullet additions, surfaces interview prep angles, and outputs an executive PDF report.</div>
+                    </div>
+                  </div>
+
+                  <div style="font-size: 0.80rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #8899B4; margin-top: 20px;">
+                    Included Analysis Deliverables
+                  </div>
+                  <div class="feature-pill-grid">
+                    <span class="feature-pill">🎯 0–10 Match Score</span>
+                    <span class="feature-pill">🔍 Evidence-Linked Skill Gaps</span>
+                    <span class="feature-pill">⚡ Action-Oriented Resume Bullets</span>
+                    <span class="feature-pill">🗺️ 3-Tier Interview Prep Roadmap</span>
+                    <span class="feature-pill">🔑 ATS Keyword Heatmap</span>
+                    <span class="feature-pill">📄 1-Click PDF Report Export</span>
+                  </div>
+
+                  <div class="ob-tip-box">
+                    <div style="font-size: 1.2rem;">💡</div>
+                    <div style="font-size: 0.84rem; color: #EDF2FF; line-height: 1.5;">
+                      <strong>Pro tip:</strong> Paste detailed job descriptions specifying real frameworks, platforms, and years of experience. The neural agent cross-checks every single claim against your resume.
+                    </div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             return
 
+        # Input Validation
         if not job_description.strip():
-            st.error("Please paste a Job Description.")
+            st.error("⚠️ Please paste a Job Description before running the analysis.")
             st.session_state.error = "Missing job description."
         elif resume_file is None:
-            st.error("Please upload a Resume PDF.")
+            st.error("⚠️ Please upload a Resume PDF file before running the analysis.")
             st.session_state.error = "Missing resume PDF."
         else:
             STAGE_LABELS = {
-                "started":          ("⚙️",  "Starting analysis pipeline…"),
-                "extracting":       ("📄",  "Parsing PDF and building embeddings…"),
-                "retrieved":        ("🔍",  "Multi-query RAG retrieval complete"),
-                "analyzing_gaps":   ("🧠",  "Identifying skill gaps…"),
-                "gaps_found":       ("📋",  "Gaps identified"),
-                "scoring":          ("📊",  "Generating score and recommendations…"),
-                "complete":         ("✅",  "Analysis complete!"),
-                "error":            ("❌",  "An error occurred"),
+                "started":        ("⚙️", "Initializing LangGraph agent pipeline…"),
+                "extracting":     ("📄", "Extracting PDF text & building vector embeddings…"),
+                "retrieved":      ("🔍", "Multi-query RAG semantic search complete"),
+                "analyzing_gaps": ("🧠", "Evaluating candidate experience against JD requirements…"),
+                "gaps_found":     ("📋", "Skill gaps classified with JD evidence"),
+                "scoring":        ("📊", "Synthesizing match score, improvements & prep roadmap…"),
+                "complete":       ("✅", "Analysis successfully completed!"),
+                "error":          ("❌", "Pipeline execution error"),
             }
 
             def _loading_html(stage_key: str, message: str) -> str:
                 icon, _ = STAGE_LABELS.get(stage_key, ("⚙️", message))
-                all_stages = [("extracting", "Parsing PDF & embeddings"), ("retrieved", "Multi-query RAG retrieval"), ("analyzing_gaps", "Identifying skill gaps"), ("scoring", "Generating recommendations")]
+                all_stages = [
+                    ("extracting",     "Parsing PDF & Vector Store"),
+                    ("retrieved",      "Multi-query RAG Retrieval"),
+                    ("analyzing_gaps", "Candidate Gap Identification"),
+                    ("scoring",        "Synthesizing Strategic Score & Roadmap"),
+                ]
                 stage_keys = [s[0] for s in all_stages]
                 current_idx = stage_keys.index(stage_key) if stage_key in stage_keys else -1
                 stages_html = ""
                 for i, (skey, slabel) in enumerate(all_stages):
-                    if i < current_idx: dot_style, text_style = "background:#34D399;", "color:#34D399;"
-                    elif i == current_idx: dot_style, text_style = "background:#818CF8; animation:dotPulse 1.2s ease-in-out infinite;", "color:#F1F5F9;"
-                    else: dot_style, text_style = "background:rgba(255,255,255,0.12);", "color:#64748B;"
-                    stages_html += f'<div class="loading-stage"><div class="stage-dot" style="{dot_style}"></div><span class="stage-text" style="{text_style}">{slabel}</span></div>'
-                return f'<div class="loading-container"><div class="loading-spinner"></div><div class="loading-text">{icon} {message}</div><div class="loading-sub">Running local pipeline — no data leaves your machine</div><div class="loading-stages">{stages_html}</div></div>'
+                    if i < current_idx:
+                        dot_style, text_style = "background:#00FFA3; box-shadow: 0 0 8px #00FFA3;", "color:#00FFA3;"
+                    elif i == current_idx:
+                        dot_style, text_style = "background:#38BDF8; box-shadow: 0 0 10px #38BDF8; animation:pulse 1s infinite alternate;", "color:#FFFFFF; font-weight:700;"
+                    else:
+                        dot_style, text_style = "background:rgba(255,255,255,0.12);", "color:#506282;"
+                    stages_html += f'<div style="display:flex; align-items:center; gap:10px; font-size:0.82rem; padding:8px 12px; border-radius:8px; background:rgba(255,255,255,0.02); margin-bottom:6px;"><div style="width:8px; height:8px; border-radius:50%; {dot_style}"></div><span style="{text_style}">{slabel}</span></div>'
+
+                return f"""
+                <div class="card-box" style="text-align:center;">
+                  <div class="loading-spinner" style="margin: 0 auto 18px;"></div>
+                  <div class="loading-text">{icon} {message}</div>
+                  <div class="loading-sub">Running 100% locally on Ollama — Zero cloud telemetry</div>
+                  <div style="max-width: 360px; margin: 20px auto 0; text-align:left;">{stages_html}</div>
+                </div>
+                """
 
             loading_placeholder = st.empty()
             if not st.session_state.out and not st.session_state.error:
@@ -615,30 +1015,45 @@ def render_analysis_page():
             error_msg = st.session_state.error
             elapsed = 0.0
 
+            # Execute SSE Stream
             if not out and not error_msg:
                 try:
                     resume_bytes = resume_file.getvalue()
                     files = {"resume_pdf": (resume_file.name, resume_bytes, "application/pdf")}
                     data = {"job_description": job_description}
+
                     with requests.post(f"{BACKEND_URL}/analyze/stream", data=data, files=files, stream=True, timeout=420) as resp:
                         resp.raise_for_status()
                         for raw_line in resp.iter_lines():
-                            if not raw_line: continue
+                            if not raw_line:
+                                continue
                             line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-                            if not line.startswith("data:"): continue
+                            if not line.startswith("data:"):
+                                continue
                             payload_str = line[len("data:"):].strip()
-                            try: evt = json.loads(payload_str)
-                            except json.JSONDecodeError: continue
+                            try:
+                                evt = json.loads(payload_str)
+                            except json.JSONDecodeError:
+                                continue
+
                             event_type = evt.get("event", "")
-                            event_msg  = evt.get("message", "")
-                            if event_type == "result": out = evt.get("data", {})
-                            elif event_type == "error": error_msg = event_msg
-                            else: loading_placeholder.markdown(_loading_html(event_type, event_msg), unsafe_allow_html=True)
+                            event_msg = evt.get("message", "")
+
+                            if event_type == "result":
+                                out = evt.get("data", {})
+                            elif event_type == "error":
+                                error_msg = event_msg
+                            else:
+                                loading_placeholder.markdown(_loading_html(event_type, event_msg), unsafe_allow_html=True)
+
                     st.session_state.out = out
                     st.session_state.error = error_msg
-                except requests.exceptions.ConnectionError: st.session_state.error = "Cannot reach the backend at http://localhost:8000 — is it running?"
-                except requests.exceptions.RequestException as exc: st.session_state.error = f"Backend request failed: {exc}"
-                except Exception as exc: st.session_state.error = f"Unexpected error: {exc}"
+                except requests.exceptions.ConnectionError:
+                    st.session_state.error = "Cannot reach backend server at http://localhost:8000. Ensure uvicorn is running."
+                except requests.exceptions.RequestException as exc:
+                    st.session_state.error = f"Analysis request failed: {exc}"
+                except Exception as exc:
+                    st.session_state.error = f"Unexpected error: {exc}"
                 elapsed = time.perf_counter() - t0
 
             loading_placeholder.empty()
@@ -652,110 +1067,215 @@ def render_analysis_page():
                 preparation = out.get("preparation", []) or []
                 keywords = out.get("keywords", []) or []
                 analysis_id = out.get("analysis_id", "")
-                
+                elapsed_display = out.get("elapsed_seconds", elapsed)
+
                 keyword_total = len(keywords)
-                keyword_found = sum(1 for k in keywords if k.get('found_in_resume'))
+                keyword_found = sum(1 for k in keywords if k.get("found_in_resume"))
                 kw_pct = round((keyword_found / keyword_total * 100) if keyword_total > 0 else 0)
 
-                if score >= 8: ring_color, score_fg, glow_bg = "#00FFA3", "#00FFA3", "rgba(0,255,163,0.10)"
-                elif score >= 5: ring_color, score_fg, glow_bg = "#FFB800", "#FFB800", "rgba(255,184,0,0.10)"
-                else: ring_color, score_fg, glow_bg = "#FF4060", "#FF4060", "rgba(255,64,96,0.10)"
+                # Color Schemes
+                if score >= 8:
+                    ring_color, score_fg = "#00FFA3", "#00FFA3"
+                    glow_bg = "rgba(0,255,163,0.12)"
+                    score_title = "Strong Alignment"
+                elif score >= 5:
+                    ring_color, score_fg = "#FFB800", "#FFB800"
+                    glow_bg = "rgba(255,184,0,0.12)"
+                    score_title = "Moderate Match"
+                else:
+                    ring_color, score_fg = "#FF4060", "#FF4060"
+                    glow_bg = "rgba(255,64,96,0.12)"
+                    score_title = "Critical Gaps Present"
 
-                radius, circumference = 62, 2 * 3.14159 * 62
-                progress = score / 10
-                dash_offset = circumference * (1 - progress)
+                radius = 64
+                circumference = 2 * 3.14159 * radius
+                dash_offset = circumference * (1 - (score / 10))
 
-                st.markdown(f'<div class="score-section"><div class="score-ring-wrap"><div class="score-ring-glow" style="background: radial-gradient(circle, {glow_bg}, transparent 70%);"></div><svg viewBox="0 0 160 160"><circle class="score-ring-bg" cx="80" cy="80" r="{radius}" /><circle class="score-ring-fill" cx="80" cy="80" r="{radius}" stroke="{ring_color}" stroke-dasharray="{circumference}" stroke-dashoffset="{dash_offset}" style="--ring-color: {ring_color};" /></svg><div class="score-center"><div class="score-value" style="color: {score_fg};">{score}<span style="font-size:1.2rem; color: var(--dimmed);">/10</span></div><div class="score-label">Match Score</div></div></div><div class="score-elapsed">completed in {elapsed:.1f}s</div></div>', unsafe_allow_html=True)
-                
-                # Stats Row
-                st.markdown(f'<div class="stats-row"><div class="stat-card"><div class="stat-value" style="color: var(--rose)">{len(gaps)}</div><div class="stat-label">Skill Gaps</div></div><div class="stat-card"><div class="stat-value" style="color: var(--mint)">{kw_pct}%</div><div class="stat-label">Keyword Match</div></div><div class="stat-card"><div class="stat-value" style="color: var(--sky)">{elapsed:.1f}s</div><div class="stat-label">Analysis Time</div></div></div>', unsafe_allow_html=True)
+                # Score Section & Gauge
+                st.markdown(
+                    f"""
+                    <div class="score-section">
+                      <div class="score-ring-wrap">
+                        <svg viewBox="0 0 170 170">
+                          <circle class="score-ring-bg" cx="85" cy="85" r="{radius}" />
+                          <circle class="score-ring-fill" cx="85" cy="85" r="{radius}"
+                            stroke="{ring_color}"
+                            stroke-dasharray="{circumference}"
+                            stroke-dashoffset="{dash_offset}"
+                            style="--ring-color: {ring_color};"
+                          />
+                        </svg>
+                        <div class="score-center">
+                          <div class="score-value" style="color: {score_fg};">{score}<span style="font-size:1.4rem; color: #506282;">/10</span></div>
+                          <div class="score-label">{score_title}</div>
+                        </div>
+                      </div>
+                      <div class="score-elapsed">Pipeline completed in {elapsed_display:.1f}s · In-Memory ChromaDB</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-                gaps_tab, imp_tab, prep_tab, kw_tab = st.tabs(["🔍  Identified Gaps", "⚡  Improvements", "🎯  Preparation", "🔑 Keywords"])
+                # Dashboard Quick Stats Row
+                st.markdown(
+                    f"""
+                    <div class="stats-row">
+                      <div class="stat-card">
+                        <div class="stat-value" style="color: var(--rose);">{len(gaps)}</div>
+                        <div class="stat-label">Identified Gaps</div>
+                      </div>
+                      <div class="stat-card">
+                        <div class="stat-value" style="color: var(--mint);">{kw_pct}%</div>
+                        <div class="stat-label">ATS Keyword Match</div>
+                      </div>
+                      <div class="stat-card">
+                        <div class="stat-value" style="color: var(--sky);">{len(improvements)}</div>
+                        <div class="stat-label">Action Items</div>
+                      </div>
+                      <div class="stat-card">
+                        <div class="stat-value" style="color: var(--violet);">{len(preparation)}</div>
+                        <div class="stat-label">Prep Roadmaps</div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
+                # Tabs Interface
+                gaps_tab, imp_tab, prep_tab, kw_tab = st.tabs([
+                    "🔍  Skill Gaps",
+                    "⚡  Actionable Improvements",
+                    "🎯  Interview Prep",
+                    "🔑  ATS Keywords",
+                ])
+
+                # ── Gaps Tab ──
                 with gaps_tab:
-                    st.markdown(f'<div class="tab-header"><div class="tab-header-icon gaps">🔍</div><div class="tab-header-title">Identified Skill Gaps</div><div class="tab-header-count">{len(gaps)} found</div></div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="tab-header"><div class="tab-header-icon gaps">🔍</div><div class="tab-header-title">Identified Technical Gaps</div><div class="tab-header-count">{len(gaps)} found</div></div>',
+                        unsafe_allow_html=True,
+                    )
                     if gaps:
                         st.markdown('<div class="result-scroll">', unsafe_allow_html=True)
                         for i, g in enumerate(gaps, start=1):
-                            if score < 5: sev_class, badge_class = "severity-high", "gap-badge-high"
-                            elif score < 8: sev_class, badge_class = "severity-med", "gap-badge-med"
-                            else: sev_class, badge_class = "severity-low", "gap-badge-low"
+                            sev_class = "severity-high" if score < 5 else ("severity-med" if score < 8 else "severity-low")
+                            badge_class = "gap-badge-high" if score < 5 else ("gap-badge-med" if score < 8 else "gap-badge-low")
+
                             text = g.strip()
                             colon_idx = text.find(":")
-                            if 0 < colon_idx < 60: skill_name, explanation = text[:colon_idx].strip(), text[colon_idx+1:].strip()
-                            else: skill_name, explanation = f"Gap {i}", text
+                            if 0 < colon_idx < 60:
+                                skill_name = text[:colon_idx].strip()
+                                explanation = text[colon_idx+1:].strip()
+                            else:
+                                skill_name = f"Requirement Gap {i}"
+                                explanation = text
+
                             jd_parts = re.split(r"\s*[—-]\s*JD requires:\s*", explanation, flags=re.IGNORECASE)
                             body_text = jd_parts[0].strip()
                             jd_req = jd_parts[1].strip() if len(jd_parts) > 1 and jd_parts[1].strip() else ""
-                            jd_html = f'<div class="gap-jd-req"><span class="jd-req-label">📌 JD Requires:</span> {jd_req}</div>' if jd_req else ''
-                            st.markdown(f'<div class="gap-card {sev_class}"><div class="gap-header"><div class="gap-badge {badge_class}">{i}</div><div class="gap-skill-name">{skill_name}</div></div><div class="gap-body"><div>{body_text}</div>{jd_html}</div></div>', unsafe_allow_html=True)
-                        st.markdown("</div>", unsafe_allow_html=True)
-                    else: st.markdown('<div class="empty-state"><div class="empty-state-icon">✅</div><div class="empty-state-text">No gaps detected — great match!</div></div>', unsafe_allow_html=True)
+                            jd_html = f'<div class="gap-jd-req"><strong style="color:var(--mint)">📌 JD Benchmark:</strong> {jd_req}</div>' if jd_req else ''
 
+                            st.markdown(
+                                f'<div class="gap-card {sev_class}"><div class="gap-header"><div class="gap-badge {badge_class}">{i}</div><div class="gap-skill-name">{skill_name}</div></div><div class="gap-body"><div>{body_text}</div>{jd_html}</div></div>',
+                                unsafe_allow_html=True,
+                            )
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div style="text-align:center; padding:2rem; color:var(--mint);">✅ No critical skill gaps detected. Strong match!</div>', unsafe_allow_html=True)
+
+                # ── Improvements Tab ──
                 with imp_tab:
-                    st.markdown(f'<div class="tab-header"><div class="tab-header-icon imps">⚡</div><div class="tab-header-title">Actionable Improvements</div><div class="tab-header-count">{len(improvements)} items</div></div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="tab-header"><div class="tab-header-icon imps">⚡</div><div class="tab-header-title">Targeted Resume Directives</div><div class="tab-header-count">{len(improvements)} recommendations</div></div>',
+                        unsafe_allow_html=True,
+                    )
                     if improvements:
                         st.markdown('<div class="result-scroll">', unsafe_allow_html=True)
                         for i, imp in enumerate(improvements, start=1):
                             text = imp.strip()
                             text = re.sub(r"^Add bullet:\s*", "", text, flags=re.IGNORECASE).strip()
                             area_val, action_val, align_val = "", "", ""
+
                             m_area = re.search(r"(?:Target\s*Area|Area|Target)\s*:\s*(.*?)(?=\s*(?:[|→—]|\bAction\s*Required:|\bAction:|\bJD\s*Alignment:|\bWhy:)|$)", text, re.IGNORECASE)
                             if m_area: area_val = m_area.group(1).strip(" |→—")
+
                             m_act = re.search(r"(?:Action\s*Required|Action)\s*:\s*(.*?)(?=\s*(?:[|→—]|\bJD\s*Alignment:|\bWhy:)|$)", text, re.IGNORECASE)
                             if m_act: action_val = m_act.group(1).strip(" |→—")
+
                             m_align = re.search(r"(?:JD\s*Alignment|Alignment|Why)\s*:\s*(.*)$", text, re.IGNORECASE)
                             if m_align: align_val = m_align.group(1).strip(" |→—")
+
                             if not action_val and not area_val:
                                 text_clean = re.sub(r"^Add bullet:\s*", "", text, flags=re.IGNORECASE)
                                 parts = re.split(r"\s*[|—-]\s*(?:addresses gap|Why|JD Alignment):\s*", text_clean, flags=re.IGNORECASE)
                                 action_val = parts[0].strip()
                                 align_val = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
-                            area_html = f'<div class="prep-gap-title" style="color: #A8FFD8; font-size: 0.88rem;">📌 Area: {area_val}</div>' if area_val else ''
-                            align_html = f'<div class="prep-sec" style="margin-top: 6px; border-color: rgba(0,255,163,0.18); background: rgba(0,255,163,0.02);"><span class="prep-tag tag-practice">🎯 JD Alignment</span><div class="prep-sec-text">{align_val}</div></div>' if align_val else ''
-                            st.markdown(f'<div class="imp-card"><div class="imp-check">✓</div><div class="imp-content"><div class="prep-header"><div class="imp-num">#{i:02d}</div>{area_html}</div><div class="imp-text" style="font-weight: 600; color: #FFFFFF;">{action_val}</div>{align_html}</div></div>', unsafe_allow_html=True)
-                        st.markdown("</div>", unsafe_allow_html=True)
-                    else: st.markdown('<div class="empty-state"><div class="empty-state-icon">🎉</div><div class="empty-state-text">No improvements needed — your resume is strong!</div></div>', unsafe_allow_html=True)
 
+                            area_html = f'<div style="font-size: 0.82rem; color: #A8FFD8; font-family: var(--mono); font-weight:700;">📌 Section: {area_val}</div>' if area_val else ''
+                            align_html = f'<div class="prep-sec" style="margin-top:6px; border-color:rgba(0,255,163,0.2);"><span class="prep-tag tag-practice">🎯 JD Alignment</span><div class="prep-sec-text">{align_val}</div></div>' if align_val else ''
+
+                            st.markdown(
+                                f'<div class="imp-card"><div class="imp-check">✓</div><div style="flex:1;"><div style="display:flex; justify-content:space-between; align-items:center;"><div class="imp-num">ACTION #{i:02d}</div>{area_html}</div><div class="imp-text">{action_val}</div>{align_html}</div></div>',
+                                unsafe_allow_html=True,
+                            )
+                        st.markdown('</div>', unsafe_allow_html=True)
+
+                # ── Preparation Tab ──
                 with prep_tab:
-                    st.markdown(f'<div class="tab-header"><div class="tab-header-icon prep">🎯</div><div class="tab-header-title">Interview Preparation</div><div class="tab-header-count">{len(preparation)} steps</div></div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="tab-header"><div class="tab-header-icon prep">🎯</div><div class="tab-header-title">3-Tier Interview Preparation Roadmap</div><div class="tab-header-count">{len(preparation)} steps</div></div>',
+                        unsafe_allow_html=True,
+                    )
                     if preparation:
-                        st.markdown('<div class="result-scroll"><div class="timeline">', unsafe_allow_html=True)
+                        st.markdown('<div class="result-scroll">', unsafe_allow_html=True)
                         for i, p in enumerate(preparation, start=1):
                             text = p.strip()
                             gap_val, study_val, practice_val, angle_val = "", "", "", ""
                             m_gap = re.search(r"(?:Target\s*Gap|Gap)\s*:\s*(.*?)(?=\s*(?:[|→—]|\bStudy:|\bPractice:|\bInterview [Aa]ngle:)|$)", text, re.IGNORECASE)
                             if m_gap: gap_val = m_gap.group(1).strip(" |→—")
+
                             m_study = re.search(r"\bStudy\s*:\s*(.*?)(?=\s*(?:[|→—]|\bPractice:|\bInterview [Aa]ngle:)|$)", text, re.IGNORECASE)
                             if m_study: study_val = m_study.group(1).strip(" |→—")
+
                             m_prac = re.search(r"\bPractice\s*:\s*(.*?)(?=\s*(?:[|→—]|\bInterview [Aa]ngle:)|$)", text, re.IGNORECASE)
                             if m_prac: practice_val = m_prac.group(1).strip(" |→—")
+
                             m_angle = re.search(r"\bInterview\s*[Aa]ngle\s*:\s*(.*)$", text, re.IGNORECASE)
                             if m_angle: angle_val = m_angle.group(1).strip(" |→—")
-                            if gap_val or study_val or practice_val or angle_val:
-                                gap_title_html = f'<div class="prep-gap-title">Target: {gap_val}</div>' if gap_val else ''
-                                study_html = f'<div class="prep-sec"><span class="prep-tag tag-study">📖 Study</span><div class="prep-sec-text">{study_val}</div></div>' if study_val else ''
-                                practice_html = f'<div class="prep-sec"><span class="prep-tag tag-practice">🛠️ Practice</span><div class="prep-sec-text">{practice_val}</div></div>' if practice_val else ''
-                                angle_html = f'<div class="prep-sec"><span class="prep-tag tag-angle">💬 Interview Angle</span><div class="prep-sec-text">{angle_val}</div></div>' if angle_val else ''
-                                card_inner = f'<div class="prep-header"><div class="prep-num">Step {i}</div>{gap_title_html}</div><div class="prep-sections">{study_html}{practice_html}{angle_html}</div>'
-                            else: card_inner = f'<div class="prep-header"><div class="prep-num">Step {i}</div></div><div class="prep-text">{text}</div>'
-                            st.markdown(f'<div class="prep-card"><div class="prep-dot"></div>{card_inner}</div>', unsafe_allow_html=True)
-                        st.markdown("</div></div>", unsafe_allow_html=True)
-                    else: st.markdown('<div class="empty-state"><div class="empty-state-icon">📚</div><div class="empty-state-text">No preparation topics generated.</div></div>', unsafe_allow_html=True)
 
+                            gap_title_html = f'<div class="prep-gap-title">Target: {gap_val}</div>' if gap_val else ''
+                            study_html = f'<div class="prep-sec"><span class="prep-tag tag-study">📖 Conceptual Study</span><div class="prep-sec-text">{study_val}</div></div>' if study_val else ''
+                            practice_html = f'<div class="prep-sec"><span class="prep-tag tag-practice">🛠️ Hands-On Project</span><div class="prep-sec-text">{practice_val}</div></div>' if practice_val else ''
+                            angle_html = f'<div class="prep-sec"><span class="prep-tag tag-angle">💬 Interview Question</span><div class="prep-sec-text">{angle_val}</div></div>' if angle_val else ''
+
+                            st.markdown(
+                                f'<div class="prep-card"><div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;"><div class="prep-num">STEP {i:02d}</div>{gap_title_html}</div>{study_html}{practice_html}{angle_html}</div>',
+                                unsafe_allow_html=True,
+                            )
+                        st.markdown('</div>', unsafe_allow_html=True)
+
+                # ── Keywords Tab ──
                 with kw_tab:
-                    st.markdown(f'<div class="tab-header"><div class="tab-header-icon" style="background:rgba(56,189,248,0.12);color:#38BDF8">🔑</div><div class="tab-header-title">JD Keyword Match</div><div class="tab-header-count">{keyword_found}/{keyword_total} matched</div></div>', unsafe_allow_html=True)
-                    found_chips = ''.join(f'<span class="kw-chip kw-found">✓ {k["keyword"]}</span>' for k in keywords if k.get('found_in_resume'))
-                    missing_chips = ''.join(f'<span class="kw-chip kw-missing">✗ {k["keyword"]}</span>' for k in keywords if not k.get('found_in_resume'))
-                    if found_chips: st.markdown(f'<div style="margin-bottom:6px;color:var(--muted);font-size:0.82rem;font-weight:600">✅ Found in Resume</div><div class="keyword-grid">{found_chips}</div>', unsafe_allow_html=True)
-                    if missing_chips: st.markdown(f'<div style="margin-top:14px;margin-bottom:6px;color:var(--muted);font-size:0.82rem;font-weight:600">❌ Missing from Resume</div><div class="keyword-grid">{missing_chips}</div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="tab-header"><div class="tab-header-icon" style="background:rgba(56,189,248,0.12); color:#38BDF8;">🔑</div><div class="tab-header-title">ATS Keyword Heatmap</div><div class="tab-header-count">{keyword_found}/{keyword_total} matched</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                    found_chips = "".join(f'<span class="kw-chip kw-found">✓ {k["keyword"]}</span>' for k in keywords if k.get("found_in_resume"))
+                    missing_chips = "".join(f'<span class="kw-chip kw-missing">✗ {k["keyword"]}</span>' for k in keywords if not k.get("found_in_resume"))
 
+                    if found_chips:
+                        st.markdown(f'<div style="color:var(--mint); font-size:0.84rem; font-weight:700; margin-bottom:6px;">✅ Verified Resume Keywords ({keyword_found})</div><div class="keyword-grid">{found_chips}</div>', unsafe_allow_html=True)
+                    if missing_chips:
+                        st.markdown(f'<div style="color:var(--rose); font-size:0.84rem; font-weight:700; margin-top:16px; margin-bottom:6px;">❌ Missing JD Keywords ({keyword_total - keyword_found})</div><div class="keyword-grid">{missing_chips}</div>', unsafe_allow_html=True)
+
+                # PDF Export Action
+                st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
                 if analysis_id:
                     try:
                         pdf_resp = requests.post(f"{BACKEND_URL}/export/pdf", data={"analysis_id": analysis_id}, timeout=30)
                         if pdf_resp.status_code == 200:
                             st.download_button(
-                                label="📄 Download PDF Report",
+                                label="📥  Download Executive PDF Report",
                                 data=pdf_resp.content,
                                 file_name=f"resume_analysis_{analysis_id}.pdf",
                                 mime="application/pdf",
@@ -764,50 +1284,103 @@ def render_analysis_page():
                     except Exception:
                         pass
 
-        st.markdown("</div>", unsafe_allow_html=True)
-
+# ---------------------------------------------------------------------------
+# View 2: Analysis History & Analytics
+# ---------------------------------------------------------------------------
 def render_history_page():
-    st.markdown('<div class="premium-card">', unsafe_allow_html=True)
-    st.markdown('<div class="tab-header"><div class="tab-header-icon" style="background:rgba(180,77,255,0.12);color:#B44DFF">📊</div><div class="tab-header-title">Analysis History</div></div>', unsafe_allow_html=True)
-    
+    st.markdown(
+        """
+        <div class="hero-container">
+          <h1 class="hero-title">Analysis History & Trends</h1>
+          <div class="hero-subtitle">
+            Historical progression and score analytics stored in local SQLite
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Top Navigation Switcher
+    col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
+    with col_nav2:
+        nav_mode = st.radio(
+            "Page Switcher Hist",
+            ["🔬 New Resume Analysis", "📊 History & Analytics"],
+            horizontal=True,
+            label_visibility="collapsed",
+            index=1,
+            key="top_nav_hist_radio",
+        )
+        if nav_mode == "🔬 New Resume Analysis":
+            st.session_state.page = "analysis"
+            st.rerun()
+
+    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+
     try:
+        # Score Trend Chart
         trend_resp = requests.get(f"{BACKEND_URL}/history/trend", timeout=10)
         if trend_resp.status_code == 200:
             trend_data = trend_resp.json()
             if len(trend_data) >= 2:
                 df = pd.DataFrame(trend_data)
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                st.markdown('<div style="color:var(--muted);font-size:0.82rem;font-weight:600;margin-bottom:8px">📈 Score Trend</div>', unsafe_allow_html=True)
-                st.line_chart(df.set_index('timestamp')['score'], color='#00FFA3', height=200)
-        
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                st.markdown('<div style="color:#00FFA3; font-size:0.95rem; font-weight:800; margin-bottom:8px;">📈 Match Score Progression Over Time</div>', unsafe_allow_html=True)
+                st.line_chart(df.set_index("timestamp")["score"], color="#00FFA3", height=220)
+
+        # History List
         history_resp = requests.get(f"{BACKEND_URL}/history", timeout=10)
         if history_resp.status_code == 200:
             history = history_resp.json()
             if not history:
-                st.markdown('<div class="empty-state"><div class="empty-state-icon">📝</div><div class="empty-state-text">No analyses yet. Run your first analysis!</div></div>', unsafe_allow_html=True)
+                st.markdown(
+                    """
+                    <div class="card-box" style="text-align:center; padding:3rem;">
+                      <div style="font-size:2.5rem; margin-bottom:10px;">📋</div>
+                      <div style="font-size:1.1rem; font-weight:700; color:#FFFFFF;">No Prior Analyses Found</div>
+                      <div style="color:#8899B4; font-size:0.86rem; margin-top:6px;">Run an analysis on the main tab to begin tracking score trends.</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
             else:
+                st.markdown(f'<div style="font-weight:800; font-size:1.05rem; color:#FFFFFF; margin-bottom:14px;">Past Analyses ({len(history)})</div>', unsafe_allow_html=True)
                 for item in history:
-                    score = item.get('score', 0)
-                    score_color = '#00FFA3' if score >= 8 else '#FFB800' if score >= 5 else '#FF4060'
-                    ts = item.get('timestamp', '')[:10]
-                    fname = item.get('resume_filename', 'unknown')
-                    jd = item.get('jd_snippet', '')[:100]
-                    gaps = item.get('gap_count', 0)
-                    kw_pct = item.get('keyword_match_pct', 0)
-                    elapsed = item.get('elapsed_seconds', 0)
-                    aid = item.get('id', '')
-                    
-                    st.markdown(f'<div class="history-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="history-filename">📄 {fname}</div><div class="history-meta">{ts} · {gaps} gaps · {kw_pct}% keywords · {elapsed:.1f}s</div><div class="history-meta" style="margin-top:4px">{jd}...</div></div><div class="history-score" style="color:{score_color}">{score}/10</div></div></div>', unsafe_allow_html=True)
-                    
-                    if st.button(f"🗑️ Delete", key=f"del_{aid}", help="Delete this analysis"):
-                        requests.delete(f"{BACKEND_URL}/history/{aid}", timeout=5)
-                        st.rerun()
+                    score = item.get("score", 0)
+                    score_color = "#00FFA3" if score >= 8 else ("#FFB800" if score >= 5 else "#FF4060")
+                    ts = item.get("timestamp", "")[:16].replace("T", " ")
+                    fname = item.get("resume_filename", "unknown.pdf")
+                    jd = item.get("jd_snippet", "")[:120]
+                    gaps = item.get("gap_count", 0)
+                    kw_pct = item.get("keyword_match_pct", 0)
+                    elapsed = item.get("elapsed_seconds", 0)
+                    aid = item.get("id", "")
+
+                    col_hist_left, col_hist_right = st.columns([5, 1])
+                    with col_hist_left:
+                        st.markdown(
+                            f"""
+                            <div class="history-card">
+                              <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div>
+                                  <div class="history-filename">📄 {fname}</div>
+                                  <div class="history-meta">{ts} · {gaps} Gaps Found · {kw_pct}% Keywords · {elapsed:.1f}s</div>
+                                  <div class="history-meta" style="margin-top:6px; color:#CAD5E8;">"{jd}..."</div>
+                                </div>
+                                <div class="history-score" style="color:{score_color};">{score}/10</div>
+                              </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    with col_hist_right:
+                        if st.button("🗑️ Delete", key=f"del_{aid}", use_container_width=True):
+                            requests.delete(f"{BACKEND_URL}/history/{aid}", timeout=5)
+                            st.rerun()
     except requests.exceptions.ConnectionError:
-        st.error("Cannot reach the backend at http://localhost:8000")
+        st.error("Cannot reach the backend server at http://localhost:8000")
     except Exception as e:
-        st.error(f"Error loading history: {e}")
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+        st.error(f"Error loading history data: {e}")
 
 # ---------------------------------------------------------------------------
 # Page Router
