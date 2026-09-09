@@ -1,24 +1,33 @@
 """
-LangGraph multi-agent pipeline for resume analysis.
+LangGraph pipeline for resume analysis.
 
-Pipeline (3 nodes)
+Pipeline (2 nodes)
 ------------------
 1. ``node_extract_and_retrieve``
-   Parses the resume PDF, chunks it, builds a vector store, and runs
-   multi-query RAG retrieval against the job description.
+   Parses the resume PDF once with layout-aware extraction. Short resumes are
+   passed through whole; longer ones are section-chunked and narrowed by hybrid
+   (dense + BM25) multi-query retrieval. The FULL extracted text is always kept
+   in state, separately from the retrieved context.
 
-2. ``node_gap_analysis``
-   Uses a local Ollama LLM to identify technical skill gaps between the
-   retrieved resume context and the job description. Output is validated
-   against ``GapAnalysisOutput`` via Pydantic.
+2. ``node_score_coach``
+   One consolidated LLM call producing score, gaps, improvements and interview
+   preparation, validated against ``ScoreCoachOutput``.
 
-3. ``node_score_coach``
-   Produces the final scored analysis: a 0-10 match score, refined gap
-   list, actionable improvements, and interview preparation steps.
-   Output is validated against ``ScoreCoachOutput`` via Pydantic.
-
-All nodes emit progress events via an optional callback so the server can
-stream real-time status updates to the client.
+Grounding design notes
+----------------------
+* ``SYSTEM_PROMPT`` is prepended to every request. It used to be defined and never
+  referenced, so the only directive reaching the model was the "do not be lenient"
+  recruiter framing — pressure in the direction of inventing gaps, with nothing
+  pushing back.
+* ATS keyword matching runs against ``full_resume_text``, never against the
+  retrieved subset. Matching against the subset marked skills as missing purely
+  because their chunk lost the retrieval ranking, and the prompt then instructed
+  the model to deduct points for them.
+* The keyword table is presented to the model as a lint hint, explicitly
+  subordinate to the resume text, rather than as an authoritative MUST-deduct list.
+* Post-processing never changes the meaning of model output. Verb rewrites that
+  upgraded "participated in" to "spearheaded and executed" fabricated stronger
+  claims than the model made.
 """
 
 from __future__ import annotations
@@ -27,22 +36,27 @@ import json
 import logging
 import re
 import time
-from typing import Callable, List, Optional, TypedDict
+from typing import Any, Callable, List, Optional, TypedDict
 
-from langchain_community.llms import Ollama
 from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.graph import END, StateGraph
 
 from .config import settings
-from .models import GapAnalysisOutput, ScoreCoachOutput
+from .models import GapAnalysisOutput, ScoreCoachOutput, normalize_list_item
 from .rag import (
     extract_layout_aware_text,
     is_single_page_resume,
-    load_and_chunk_pdf,
     retrieve_relevant_chunks,
+    section_aware_chunk_resume,
 )
 
 logger = logging.getLogger(__name__)
+
+# Backwards-compatible alias: tests/test_parser.py imports this from agent.
+# The canonical implementation now lives in models.py so the Pydantic
+# mode="before" validators can call it without a circular import.
+_normalize_list_item = normalize_list_item
+
 
 # ── Progress callback type ────────────────────────────────────────────────────
 # Called by each node so the server can emit SSE events.  Signature:
@@ -54,7 +68,7 @@ ProgressCallback = Optional[Callable[[str, str], None]]
 
 
 class ResumeAnalysisState(TypedDict):
-    """Immutable-like typed state that flows through the LangGraph pipeline."""
+    """Typed state that flows through the LangGraph pipeline."""
 
     # ── Inputs (set by the server before graph.invoke) ──────────────────
     job_description: str
@@ -64,41 +78,43 @@ class ResumeAnalysisState(TypedDict):
     progress_callback: ProgressCallback  # optional; ignored by LangGraph routing
 
     # ── Node 1 outputs ───────────────────────────────────────────────────
+    full_resume_text: str      # complete extracted text — authoritative for keyword matching
     resume_chunks: List[str]
     retrieved_chunks: List[str]
 
-    # ── Node 2 outputs ───────────────────────────────────────────────────
-    gap_analysis_text: str
-    gaps: List[str]
-
-    # ── Node 3 / final outputs ───────────────────────────────────────────
+    # ── Node 2 / final outputs ───────────────────────────────────────────
     improvements: List[str]
     preparation: List[str]
+    gaps: List[str]
     score: int
     keywords: list[dict]
+    parse_failed: bool         # True when the LLM output could not be parsed at all
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
+# Prepended to the analysis prompt. langchain_community.llms.Ollama is a
+# completion model with no system role, so this is concatenated rather than
+# passed as a separate message.
 
 SYSTEM_PROMPT = """\
-You are a meticulous Generative AI engineer and technical recruiter hybrid.
+You are a technical recruiter performing evidence-based resume screening.
 
-You are a strict text-matcher. Base gaps ONLY on the provided job description text. Do not hallucinate industry standards (e.g., AWS, Pinecone) if they are not explicitly written.
-If the candidate's resume explicitly satisfies a job description requirement, do not flag it as a gap.
-Never recommend a resume improvement or bullet point that is already visibly present in the candidate's uploaded resume text.
+GROUNDING RULES (these override any other instruction):
+1. The RESUME TEXT is the sole source of truth about the candidate. The JOB
+   DESCRIPTION is the sole source of truth about what is required.
+2. Never introduce a technology, tool, cloud platform, framework, certification
+   or qualification that does not appear verbatim in the job description. Do not
+   supply requirements the job description omits, however conventional they seem
+   for the role.
+3. If evidence for a requirement appears anywhere in the resume text, that
+   requirement is satisfied. Do not flag it, and do not suggest adding it.
+4. Every gap you report must quote the exact requirement wording from the job
+   description. If you cannot quote it, it is not a gap — omit it.
+5. Report the number of gaps the evidence actually supports. Zero is a valid
+   answer. Do not pad the list to reach a target count.
+6. Never suggest an improvement describing something the resume already contains.
 
-Operate exclusively on the provided resume context and job description. Forbid prior-knowledge bias.
-Your output must be a single, valid JSON object matching the schema requested.
-
-Scoring rubric (integer 0–10):
-  9-10  Highly aligned: most required tools/skills present with strong evidence.
-  6-8   Mostly aligned: a few key tools or insufficient depth.
-  3-5   Partial: multiple significant gaps or weak/unclear evidence.
-  0-2   Largely misaligned or missing relevant technical evidence.
-
-Gaps         → specific skills/tools/experience categories tied strictly to the JD (empty if candidate meets all requirements).
-Improvements → concrete resume bullet rewrites or additions that close each genuine gap.
-Preparation  → interview study topics, each aligned to a specific genuine gap.
+Your output must be a single valid JSON object matching the requested schema.
 """
 
 
@@ -106,14 +122,12 @@ Preparation  → interview study topics, each aligned to a specific genuine gap.
 
 
 def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
-    """Instantiate configured LLM provider: local Ollama or Groq Cloud API.
-
-    - If settings.llm_provider == "groq": ChatGroq(model="llama-3.1-8b-instant", temperature=0.0)
-    - If settings.llm_provider == "ollama": Ollama(model=settings.ollama_model, temperature=0.0)
-    """
+    """Instantiate the configured LLM provider: local Ollama or Groq Cloud API."""
     provider = getattr(settings, "llm_provider", "ollama").lower()
+
     if provider == "groq":
         from langchain_groq import ChatGroq
+
         groq_model = getattr(settings, "groq_model", "llama-3.1-8b-instant")
         logger.info("Instantiating Groq LLM provider: model=%s", groq_model)
         return ChatGroq(
@@ -122,18 +136,55 @@ def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
             groq_api_key=settings.groq_api_key,
             model_kwargs={"response_format": {"type": "json_object"}},
         )
-    else:
-        target_model = model or settings.ollama_model
-        logger.info("Instantiating local Ollama LLM provider: model=%s", target_model)
-        return Ollama(
-            model=target_model,
-            temperature=0.0,  # Hardcoded to 0.0 to eliminate creative drift
-            base_url=settings.ollama_base_url,
-            format="json",
-            num_ctx=4096,     # Expanded context window for comprehensive RAG chunks + JD
-            num_predict=800,
-            keep_alive="15m",
+
+    target_model = model or settings.ollama_model
+    num_ctx = getattr(settings, "ollama_num_ctx", 8192)
+    num_predict = getattr(settings, "ollama_num_predict", 1500)
+    logger.info(
+        "Instantiating local Ollama LLM provider: model=%s num_ctx=%d num_predict=%d",
+        target_model, num_ctx, num_predict,
+    )
+
+    base_kwargs = dict(
+        model=target_model,
+        temperature=0.0,          # Hardcoded: eliminates creative drift
+        base_url=settings.ollama_base_url,
+        format="json",
+        num_ctx=num_ctx,          # Must cover prompt + generation, or Ollama silently truncates
+        num_predict=num_predict,
+        keep_alive="15m",
+    )
+
+    # Sampling overrides. qwen3.5's Modelfile sets presence_penalty 1.5, which pushes
+    # the model away from reusing the repeated JSON keys and field labels this schema
+    # requires. repeat_penalty is neutralised for the same reason.
+    # Applied opportunistically: the LangChain Ollama wrappers reject unknown fields
+    # and expose different options by version, so a rejection falls back to the base
+    # configuration instead of failing the run.
+    tuning_kwargs = dict(
+        top_k=getattr(settings, "ollama_top_k", 20),
+        top_p=getattr(settings, "ollama_top_p", 0.95),
+        repeat_penalty=getattr(settings, "ollama_repeat_penalty", 1.0),
+    )
+
+    # langchain_community.llms.Ollama is deprecated; prefer langchain_ollama.
+    try:
+        from langchain_ollama import OllamaLLM as _OllamaCls
+    except ImportError:
+        from langchain_community.llms import Ollama as _OllamaCls
+
+        logger.debug("langchain_ollama unavailable; falling back to deprecated community Ollama")
+
+    try:
+        return _OllamaCls(**base_kwargs, **tuning_kwargs)
+    except Exception as exc:
+        logger.warning(
+            "LLM wrapper rejected sampling overrides (%s); using base configuration. "
+            "If output drifts from the schema mid-response, set the parameters in a "
+            "Modelfile instead — see the README.",
+            exc,
         )
+        return _OllamaCls(**base_kwargs)
 
 
 # Backwards compatibility alias
@@ -156,96 +207,16 @@ def _strip_json_fences(raw: str) -> str:
 
 
 def _clean_json_str(s: str) -> str:
-    """Strip markdown, extract {...} or [...], and fix trailing commas."""
+    """Strip markdown fences and remove trailing commas inside objects/arrays."""
     s = _strip_json_fences(s)
-    # Fix trailing commas inside JSON objects/arrays: `[ "foo", ]` -> `[ "foo" ]`
+    # `[ "foo", ]` -> `[ "foo" ]`
     s = re.sub(r",\s*([\]}])", r"\1", s)
     return s
 
 
-def _normalize_list_item(item: Any) -> str:
-    """Extract a clean plain string from whatever the LLM puts in a list slot.
-
-    Handles three cases:
-    1. Plain string  → return as-is (most common after fixing prompts).
-    2. Simple dict   → pick known keys or format structured sub-keys into crisp pipe-separated paragraphs.
-    3. Multi-key dict → concatenate all non-empty string values into one paragraph.
-    """
-    if isinstance(item, dict):
-        # 1. Check for structured gaps dictionary
-        skill_val = item.get("Skill Name") or item.get("skill_name") or item.get("Skill") or item.get("name")
-        missing_val = item.get("Missing Evidence") or item.get("missing_evidence") or item.get("Missing")
-        jd_val = item.get("JD Demands") or item.get("jd_demands") or item.get("JD") or item.get("demands")
-        if skill_val and isinstance(skill_val, str) and (missing_val or jd_val):
-            parts = []
-            if isinstance(missing_val, str) and missing_val.strip(): parts.append(missing_val.strip().rstrip(".") + ".")
-            if isinstance(jd_val, str) and jd_val.strip(): parts.append(f"JD requires: {jd_val.strip().rstrip('.')}.")
-            body = " ".join(parts) if parts else "Candidate resume needs stronger alignment with job requirements."
-            return f"{skill_val.strip()}: {body}"
-
-        # 2. Check for structured improvements dictionary
-        action_val = item.get("Action Required") or item.get("action_required") or item.get("Action") or item.get("action")
-        area_val = item.get("Target Area") or item.get("target_area") or item.get("Area") or item.get("area") or item.get("Target")
-        align_val = item.get("JD Alignment") or item.get("jd_alignment") or item.get("Alignment") or item.get("why")
-        if action_val and isinstance(action_val, str):
-            area_str = f"Target Area: {area_val.strip()} | " if isinstance(area_val, str) and area_val.strip() else ""
-            align_str = f" | JD Alignment: {align_val.strip()}" if isinstance(align_val, str) and align_val.strip() else ""
-            return f"{area_str}Action Required: {action_val.strip()}{align_str}"
-
-        # 3. Check for structured preparation dictionary
-        gap_val = item.get("Target Gap") or item.get("target_gap") or item.get("Gap") or item.get("gap")
-        study_val = item.get("Study") or item.get("study") or item.get("resource")
-        prac_val = item.get("Practice") or item.get("practice") or item.get("project")
-        angle_val = item.get("Interview Angle") or item.get("interview_angle") or item.get("angle")
-        if study_val or prac_val or angle_val:
-            gap_str = f"Target Gap: {gap_val.strip()} | " if isinstance(gap_val, str) and gap_val.strip() else ""
-            s_str = f"Study: {study_val.strip()} | " if isinstance(study_val, str) and study_val.strip() else ""
-            p_str = f"Practice: {prac_val.strip()} | " if isinstance(prac_val, str) and prac_val.strip() else ""
-            a_str = f"Interview Angle: {angle_val.strip()}" if isinstance(angle_val, str) and angle_val.strip() else ""
-            return f"{gap_str}{s_str}{p_str}{a_str}".strip(" |")
-
-        # Try well-known single-key patterns next
-        single_key_priority = (
-            "type", "gap", "improvement", "preparation",
-            "text", "description", "value", "content",
-        )
-        for k in single_key_priority:
-            if isinstance(item.get(k), str) and item[k].strip():
-                return item[k].strip()
-
-        # Multi-key dict: reconstruct as "Key: value. Key2: value2."
-        str_values = [v.strip() for v in item.values() if isinstance(v, str) and v.strip()]
-        if str_values:
-            if len(str_values) == 1:
-                return str_values[0]
-            head = str_values[0].rstrip(".")
-            tail = " ".join(v.rstrip(".") + "." for v in str_values[1:])
-            return f"{head}: {tail}"
-        return ""
-
-    if isinstance(item, str):
-        s = item.strip()
-        # Attempt to decode if it looks like a stringified dict
-        if s.startswith("{"):
-            try:
-                decoded = json.loads(s)
-                if isinstance(decoded, dict):
-                    return _normalize_list_item(decoded)
-            except Exception:
-                pass
-        if s in ('""', "''", "[]", "{}", "none", "n/a", "null"):
-            return ""
-        return s
-
-    if item is None:
-        return ""
-    s = str(item).strip()
-    return "" if s in ('""', "''", "[]", "{}", "none", "n/a", "null") else s
-
-
 def _clean_gap_text(text: str) -> str:
+    """Collapse duplicated skill headers, e.g. 'Python: Python: missing' -> 'Python: missing'."""
     s = text.strip()
-    # Remove duplicate skill headers like 'Python: Python: ' or 'RAG: RAG: '
     parts = s.split(":", 2)
     if len(parts) >= 3 and parts[0].strip().lower() == parts[1].strip().lower():
         s = f"{parts[0].strip()}: {parts[2].strip()}"
@@ -253,266 +224,344 @@ def _clean_gap_text(text: str) -> str:
 
 
 def _clean_improvement_text(text: str) -> str:
+    """Remove prompt artifacts from improvement text.
+
+    Deliberately does NOT rewrite verbs. The previous implementation mapped
+    "participated in" to "spearheaded and executed" and similar, which invented
+    stronger claims than the model produced — hallucination introduced after the
+    LLM rather than by it. Tense and phrasing are the model's job now.
+    """
     s = text.strip()
-    # Strip prompt artifacts
     s = re.sub(r"^Add bullet:\s*", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\s*[—-]\s*addresses gap:.*$", "", s, flags=re.IGNORECASE)
-    # Fix present tense 3B defaults to past tense professional resume language
-    replacements = [
-        (r"^Design and implement(ed)?\b", "Designed and implemented"),
-        (r"^Participate(d)? in\b", "Spearheaded and executed"),
-        (r"^Build and deploy(ed)?\b", "Built and deployed"),
-        (r"^Develop(ed)?\b", "Developed"),
-        (r"^Create(d)?\b", "Created"),
-        (r"^Implement(ed)?\b", "Implemented"),
-        (r"^Conduct(ed)?\b", "Conducted"),
-        (r"^Optimize(d)?\b", "Optimized"),
-        (r"^Architect(ed)?\b", "Architected"),
-        (r"^Lead\b", "Led"),
-    ]
-    for pattern, repl in replacements:
-        s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
     return s.strip()
 
 
 def _normalize_model_lists(obj: Any) -> Any:
-    """Ensure string list attributes on Pydantic models are stripped of dict wrappers and polished."""
-    def _is_valid(val: str) -> bool:
-        return bool(val and val.strip() and val.strip() not in ('""', "''", "[]", "{}", "none", "n/a", "null"))
+    """Apply cosmetic cleanup to already-validated list fields.
 
+    Structural normalization happens in models.py via the mode="before" validators;
+    this only handles presentation artifacts.
+    """
     if hasattr(obj, "gaps") and isinstance(obj.gaps, list):
-        obj.gaps = [_clean_gap_text(cleaned) for x in obj.gaps for cleaned in [_normalize_list_item(x)] if _is_valid(cleaned)]
+        obj.gaps = [t for t in (_clean_gap_text(x) for x in obj.gaps) if t]
     if hasattr(obj, "improvements") and isinstance(obj.improvements, list):
-        obj.improvements = [_clean_improvement_text(cleaned) for x in obj.improvements for cleaned in [_normalize_list_item(x)] if _is_valid(cleaned)]
+        obj.improvements = [t for t in (_clean_improvement_text(x) for x in obj.improvements) if t]
     if hasattr(obj, "preparation") and isinstance(obj.preparation, list):
-        obj.preparation = [cleaned for x in obj.preparation for cleaned in [_normalize_list_item(x)] if _is_valid(cleaned)]
+        obj.preparation = [x.strip() for x in obj.preparation if x and x.strip()]
     return obj
 
 
+def _extract_json_blob(cleaned: str) -> Any:
+    """Best-effort extraction of a JSON object from text that may wrap or trail it.
+
+    Prefers a balanced top-level object. A bare `[...]` match is NOT accepted here:
+    when generation is truncated mid-object, the first complete inner array (e.g.
+    the finished `gaps` list) would match and be mistaken for the whole payload,
+    silently discarding the score and every other field.
+    """
+    start = cleaned.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(cleaned)):
+        ch = cleaned[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = re.sub(r",\s*([\]}])", r"\1", cleaned[start:i + 1])
+                try:
+                    return json.loads(candidate)
+                except Exception:
+                    return None
+    # Unbalanced: generation was cut off. Signal truncation rather than guessing.
+    logger.warning("JSON object never closed — output was truncated (raise ollama_num_predict).")
+    return None
+
+
 def _parse_llm_output(raw: str, parser: PydanticOutputParser, model_cls):
-    """Parse *raw* LLM text → Pydantic model, with a robust self-healing fallback chain."""
+    """Parse *raw* LLM text into a Pydantic model, with a self-healing fallback chain.
+
+    On total failure returns an instance with ``parse_failed=True`` so the caller can
+    surface an error. Previously this returned an all-defaults model, which rendered
+    as a legitimate 0/10 with no gaps and was written to history as a real analysis.
+    """
     cleaned = _clean_json_str(raw)
-    # Attempt 1: PydanticOutputParser
+
+    # ── Attempt 1: PydanticOutputParser ───────────────────────────────────
     try:
-        res = parser.parse(cleaned)
-        return _normalize_model_lists(res)
+        return _normalize_model_lists(parser.parse(cleaned))
     except Exception:
         pass
 
-    # Attempt 2: direct json.loads + model construction
+    # ── Attempt 2: direct json.loads + model construction ─────────────────
+    data: Any = None
     try:
         data = json.loads(cleaned)
-        if isinstance(data, dict):
-            for lk in ("gaps", "improvements", "preparation"):
-                if isinstance(data.get(lk), list):
-                    data[lk] = [_normalize_list_item(x) for x in data[lk] if _normalize_list_item(x)]
-            # Ensure score is an int, not a placeholder string
-            if "score" in data and not isinstance(data["score"], (int, float)):
-                try:
-                    data["score"] = int(re.search(r"\d+", str(data["score"])).group())
-                except Exception:
-                    data["score"] = 0
-        res = model_cls(**data)
-        return _normalize_model_lists(res)
     except Exception:
-        pass
+        data = _extract_json_blob(cleaned)
 
-    # Attempt 2.5: regex extraction of {...} or [...] inside any wrapper text
-    data = None
-    try:
-        match = re.search(r"(\{.*\}|\[.*\])", cleaned, re.DOTALL)
-        if match:
-            extracted = re.sub(r",\s*([\]}])", r"\1", match.group(1))
-            data = json.loads(extracted)
-            if isinstance(data, dict):
-                for lk in ("gaps", "improvements", "preparation"):
-                    if isinstance(data.get(lk), list):
-                        data[lk] = [_normalize_list_item(x) for x in data[lk] if _normalize_list_item(x)]
-                res = model_cls(**data)
-                return _normalize_model_lists(res)
-            elif isinstance(data, list) and model_cls == GapAnalysisOutput:
-                res = GapAnalysisOutput(gaps=[_normalize_list_item(x) for x in data if _normalize_list_item(x)])
-                return _normalize_model_lists(res)
-    except Exception:
-        pass
+    if isinstance(data, dict):
+        # Unwrap schema echoes: small models often return the JSON Schema shape
+        # ({"properties": {...}}) instead of an instance of it.
+        for wrapper_key in ("properties", "output", "result", "response",
+                            "ScoreCoachOutput", "GapAnalysisOutput"):
+            inner = data.get(wrapper_key)
+            if isinstance(inner, dict):
+                data = inner
+                break
 
-    # Attempt 3: Intelligent Schema Normalization & Self-Healing
-    logger.warning("Standard parse failed for %s. Attempting self-healing normalization on raw text: %s", model_cls.__name__, raw[:600])
-    try:
-        if data is None and isinstance(raw, str):
-            match = re.search(r"(\{.*\}|\[.*\])", cleaned, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(re.sub(r",\s*([\]}])", r"\1", match.group(1)))
-                except Exception:
-                    pass
+        try:
+            if model_cls is GapAnalysisOutput:
+                gaps = _first_list(data, ["gaps", "technical_gaps", "skill_gaps", "gaps_identified"])
+                return _normalize_model_lists(GapAnalysisOutput(gaps=gaps))
 
-        if isinstance(data, dict):
-            # Unwrap if model nested properties under 'properties', 'output', 'result', etc.
-            for wrapper_key in ("properties", "output", "result", "response", "ScoreCoachOutput", "GapAnalysisOutput"):
-                if isinstance(data.get(wrapper_key), dict):
-                    data = data[wrapper_key]
-                    break
-
-            if model_cls == GapAnalysisOutput:
-                gaps = data.get("gaps") or data.get("technical_gaps") or data.get("skill_gaps") or data.get("gaps_identified")
-                if not gaps:
-                    for v in data.values():
-                        if isinstance(v, list):
-                            gaps = v
-                            break
-                if isinstance(gaps, list):
-                    res = GapAnalysisOutput(gaps=[_normalize_list_item(g) for g in gaps if _normalize_list_item(g)])
-                    return _normalize_model_lists(res)
-                elif isinstance(gaps, str):
-                    res = GapAnalysisOutput(gaps=[_normalize_list_item(g) for g in re.split(r"\n|;", gaps) if _normalize_list_item(g)])
-                    return _normalize_model_lists(res)
-
-            elif model_cls == ScoreCoachOutput:
-                # Extract score safely
-                raw_score = data.get("score")
-                if raw_score is None:
-                    for sk in ("match_score", "final_score", "rating", "matchScore"):
-                        if data.get(sk) is not None:
-                            raw_score = data[sk]
-                            break
-                score_val = 0
-                if isinstance(raw_score, (int, float)):
-                    score_val = int(raw_score)
-                elif isinstance(raw_score, str):
-                    sm = re.search(r"\d+", raw_score)
-                    if sm:
-                        score_val = int(sm.group(0))
-
-                # Extract list fields safely
-                def _get_list(keys: list[str]) -> list[str]:
-                    for k in keys:
-                        val = data.get(k)
-                        if isinstance(val, list):
-                            return [_normalize_list_item(item) for item in val if _normalize_list_item(item)]
-                        elif isinstance(val, str) and val.strip():
-                            return [_normalize_list_item(s) for s in re.split(r"\n|;", val) if _normalize_list_item(s)]
-                    return []
-
-                gaps = _get_list(["gaps", "technical_gaps", "skill_gaps", "identified_gaps"])
-                improvements = _get_list(["improvements", "recommendations", "resume_improvements", "suggestions", "bullet_points"])
-                preparation = _get_list(["preparation", "interview_prep", "prep_plan", "study_topics", "preparation_steps"])
-
-                res = ScoreCoachOutput(
-                    score=max(0, min(10, score_val)),
-                    gaps=gaps,
-                    improvements=improvements,
-                    preparation=preparation
+            if model_cls is ScoreCoachOutput:
+                score = _coerce_score(data)
+                result = ScoreCoachOutput(
+                    score=score,
+                    gaps=_first_list(data, ["gaps", "technical_gaps", "skill_gaps", "identified_gaps"]),
+                    improvements=_first_list(data, [
+                        "improvements", "recommendations", "resume_improvements",
+                        "suggestions", "bullet_points",
+                    ]),
+                    preparation=_first_list(data, [
+                        "preparation", "interview_prep", "prep_plan",
+                        "study_topics", "preparation_steps",
+                    ]),
                 )
-                return _normalize_model_lists(res)
-    except Exception as e:
-        logger.error("Self-healing normalization failed: %s", e)
+                return _normalize_model_lists(result)
 
-    # Attempt 4: Return cleanly initialized defaults so the pipeline never crashes
-    logger.error("All parse & self-healing attempts failed for %s. Returning safe defaults.", model_cls.__name__)
-    try:
-        return model_cls()
-    except Exception:
-        return model_cls.model_construct(score=0, gaps=[], improvements=[], preparation=[])
+            return _normalize_model_lists(model_cls(**data))
+        except Exception as exc:
+            logger.error("Schema normalization failed: %s", exc)
+
+    # ── Attempt 3: give up loudly ─────────────────────────────────────────
+    logger.error(
+        "All parse attempts failed for %s. Raw output (first 600 chars): %s",
+        model_cls.__name__, (raw or "")[:600],
+    )
+    failed = model_cls()
+    failed.parse_failed = True
+    return failed
+
+
+def _first_list(data: dict, keys: list[str]) -> list:
+    """Return the first present list-or-string field among *keys*, split if a string."""
+    for k in keys:
+        val = data.get(k)
+        if isinstance(val, list):
+            return val
+        if isinstance(val, str) and val.strip():
+            return [s for s in re.split(r"\n|;", val) if s.strip()]
+    return []
+
+
+def _coerce_score(data: dict) -> int:
+    """Pull an integer 0-10 score out of whatever key the model used."""
+    raw_score = data.get("score")
+    if raw_score is None:
+        for sk in ("match_score", "final_score", "rating", "matchScore"):
+            if data.get(sk) is not None:
+                raw_score = data[sk]
+                break
+
+    value = 0
+    if isinstance(raw_score, bool):
+        value = 0
+    elif isinstance(raw_score, (int, float)):
+        value = int(raw_score)
+    elif isinstance(raw_score, str):
+        m = re.search(r"\d+", raw_score)
+        if m:
+            value = int(m.group(0))
+    return max(0, min(10, value))
+
+
+# ── ATS keyword extraction ────────────────────────────────────────────────────
+
+_CURATED_KEYWORDS = {
+    "skill": [
+        "Python", "Java", "JavaScript", "TypeScript", "C++", "C#", "Go", "Rust",
+        "Ruby", "Kotlin", "Swift", "Scala", "R", "MATLAB", "SQL",
+        "TensorFlow", "PyTorch", "scikit-learn", "Pandas", "NumPy", "LangChain",
+        "LangGraph", "Ollama", "OpenAI", "Hugging Face", "FAISS", "Pinecone",
+        "ChromaDB", "Weaviate", "RAG", "LLM", "NLP",
+    ],
+    "tool": [
+        "React", "Angular", "Vue", "Django", "Flask", "FastAPI", "Spring",
+        "Express", "Node.js", "Next.js", ".NET", "ASP.NET",
+        "AWS", "GCP", "Azure", "Docker", "Kubernetes", "Terraform",
+        "PostgreSQL", "MySQL", "MongoDB", "Redis", "Elasticsearch", "DynamoDB",
+        "Git", "Jenkins", "GitHub Actions", "CI/CD", "Jira",
+    ],
+    "certification": [
+        "AWS Certified", "PMP", "Scrum",
+    ],
+}
+
+# Lead-in phrases that introduce a requirement in prose JDs.
+_NER_LEAD_INS = (
+    r"experience with", r"experience in", r"proficiency in", r"proficient in",
+    r"knowledge of", r"familiarity with", r"expertise in", r"hands[- ]on with",
+    r"skilled in", r"background in",
+)
+
+# Generic prose that is not a technology. A candidate phrase containing any of
+# these is discarded, because checking a resume for the literal string
+# "Strong Communication Skills" always fails and manufactures a false gap.
+_NER_NOISE_TOKENS = {
+    "strong", "excellent", "good", "solid", "proven", "working", "related",
+    "similar", "plus", "bonus", "nice", "communication", "skills", "skill",
+    "ability", "abilities", "experience", "team", "teams", "years", "year",
+    "environment", "environments", "fast", "paced", "development", "developing",
+    "methodologies", "methodology", "understanding", "knowledge", "principles",
+    "practices", "best", "concepts", "fundamentals", "tools", "technologies",
+    "systems", "software", "applications", "a", "an", "the", "and", "or",
+    "large", "scale", "modern", "various", "multiple", "complex", "real",
+    "world", "production", "enterprise", "cross", "functional", "problem",
+    "solving", "written", "verbal", "attention", "detail", "degree",
+    "bachelor", "master", "computer", "science", "field",
+}
+
+
+def _keyword_pattern(term: str) -> str:
+    """Symbol-aware boundary matcher: handles C++, C#, .NET, Node.js, React.js."""
+    return r"(?i)(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])"
+
+
+def _phrase_present(phrase: str, text: str) -> bool:
+    """True if *phrase* appears verbatim, or if every one of its tokens appears.
+
+    Resumes rarely repeat a JD's exact multi-word phrasing. Requiring a verbatim
+    match on phrases produced a steady stream of false "missing" keywords, so
+    token-level coverage counts as present.
+    """
+    if re.search(_keyword_pattern(phrase), text):
+        return True
+    tokens = [t for t in phrase.split() if t]
+    if len(tokens) < 2:
+        return False
+    return all(re.search(_keyword_pattern(t), text) for t in tokens)
 
 
 def extract_jd_keywords(jd_text: str, resume_text: str) -> list[dict]:
-    """Extract skills/tools/technologies from JD and check if present in resume."""
-    keywords_found = []
-    seen = set()
-    
-    categories = {
-        'skill': [
-            'Python', 'Java', 'JavaScript', 'TypeScript', 'C++', 'C#', 'Go', 'Rust', 'Ruby', 'Kotlin', 'Swift', 'Scala', 'R', 'MATLAB', 'SQL',
-            'TensorFlow', 'PyTorch', 'scikit-learn', 'Pandas', 'NumPy', 'LangChain', 'LangGraph', 'Ollama', 'OpenAI', 'Hugging Face', 'FAISS', 'Pinecone', 'ChromaDB', 'Weaviate', 'RAG', 'LLM', 'NLP'
-        ],
-        'tool': [
-            'React', 'Angular', 'Vue', 'Django', 'Flask', 'FastAPI', 'Spring', 'Express', 'Node.js', 'Next.js',
-            'AWS', 'GCP', 'Azure', 'Docker', 'Kubernetes', 'Terraform',
-            'PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'Elasticsearch', 'DynamoDB',
-            'Git', 'Jenkins', 'GitHub Actions', 'CI/CD', 'Jira'
-        ],
-        'certification': [
-            'AWS Certified', 'PMP', 'Scrum'
-        ]
-    }
-    
-    jd_lower = jd_text.lower()
-    resume_lower = resume_text.lower()
-    
-    for category, terms in categories.items():
+    """Extract skills/tools from the JD and check presence in the FULL resume text.
+
+    ``resume_text`` must be the complete extracted resume, not a retrieved subset.
+    Passing a subset marks skills absent merely because their chunk lost the
+    retrieval ranking.
+    """
+    keywords_found: list[dict] = []
+    seen: set[str] = set()
+
+    for category, terms in _CURATED_KEYWORDS.items():
         for term in terms:
-            # Robust symbol-aware boundary matcher for C++, C#, .NET, Node.js, etc.
-            pattern = r"(?i)(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])"
-            if re.search(pattern, jd_text):
-                term_lower = term.lower()
-                if term_lower not in seen:
-                    found = bool(re.search(pattern, resume_text))
-                    keywords_found.append({
-                        "keyword": term,
-                        "found_in_resume": found,
-                        "category": category,
-                    })
-                    seen.add(term_lower)
+            pattern = _keyword_pattern(term)
+            if not re.search(pattern, jd_text):
+                continue
+            term_lower = term.lower()
+            if term_lower in seen:
+                continue
+            keywords_found.append({
+                "keyword": term,
+                "found_in_resume": bool(re.search(pattern, resume_text)),
+                "category": category,
+            })
+            seen.add(term_lower)
 
-    ner_patterns = [
-        r"experience with\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
-        r"proficiency in\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
-        r"knowledge of\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
-        r"familiarity with\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
-        r"expertise in\s+([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*)",
-    ]
-
-    for pattern in ner_patterns:
+    # Prose requirements: capped at 3 capitalized tokens and confined to a single
+    # line. `\s+` previously matched newlines, so "Experience with Docker\nStrong
+    # Communication Skills" captured the whole run as one keyword.
+    token = r"[A-Z][A-Za-z0-9+#.\-]*"
+    for lead in _NER_LEAD_INS:
+        pattern = (
+            r"(?i)\b" + lead + r"[^\S\n]+"
+            r"((?:" + token + r")(?:[^\S\n]+(?:" + token + r")){0,2})"
+        )
         for match in re.finditer(pattern, jd_text):
-            phrase = match.group(1).strip()
-            if phrase:
-                term_lower = phrase.lower()
-                if term_lower not in seen and len(phrase) > 1:
-                    pattern_search = r"(?i)(?<![A-Za-z])" + re.escape(phrase) + r"(?![A-Za-z])"
-                    found = bool(re.search(pattern_search, resume_text))
-                    keywords_found.append({
-                        "keyword": phrase,
-                        "found_in_resume": found,
-                        "category": "skill",
-                    })
-                    seen.add(term_lower)
+            phrase = match.group(1).strip(" ,.;:-")
+            if not phrase or len(phrase) < 2 or len(phrase) > 40:
+                continue
+            tokens = phrase.split()
+            if any(t.strip(".,;:-").lower() in _NER_NOISE_TOKENS for t in tokens):
+                continue
+            phrase_lower = phrase.lower()
+            if phrase_lower in seen:
+                continue
+            keywords_found.append({
+                "keyword": phrase,
+                "found_in_resume": _phrase_present(phrase, resume_text),
+                "category": "skill",
+            })
+            seen.add(phrase_lower)
 
+    # Surface unmatched keywords first so the 20-item cap does not hide gaps.
+    keywords_found.sort(key=lambda k: k["found_in_resume"])
     return keywords_found[:20]
 
 
-# ── Node 1: PDF extraction + multi-query RAG retrieval ───────────────────────
-
-
-# ── Node 1: PDF extraction + multi-query RAG retrieval ───────────────────────
+# ── Node 1: PDF extraction + retrieval ───────────────────────────────────────
 
 
 def node_extract_and_retrieve(state: ResumeAnalysisState) -> dict:
-    """Parse resume PDF, evaluate length, and retrieve context (bypassing RAG for single-page documents)."""
+    """Parse the resume PDF once, then choose full-document or retrieved context."""
     callback: ProgressCallback = state.get("progress_callback")
     if callback:
         callback("extracting", "Parsing PDF layout and evaluating document length…")
 
     t0 = time.perf_counter()
     full_text = extract_layout_aware_text(state["resume_pdf_bytes"])
-    word_count = len(full_text.split())
 
-    # Module 2: RAG Bypass for Single-Page Resumes (< 1,000 words)
-    if is_single_page_resume(full_text, max_words=1000):
+    if not full_text.strip():
+        raise ValueError(
+            "No text could be extracted from the uploaded PDF. It may be a scanned "
+            "image — re-export it as a text-based PDF, or run OCR first."
+        )
+
+    word_count = len(full_text.split())
+    max_words = getattr(settings, "single_page_max_words", 1000)
+
+    # Short resumes: skip retrieval entirely, the whole document fits the context.
+    if is_single_page_resume(full_text, max_words=max_words):
         logger.info(
-            "Node 1 — Single-page resume detected (%d words < 1000): Bypassing ChromaDB retrieval to preserve complete context.",
-            word_count,
+            "Node 1 — short resume (%d words < %d): using full document, retrieval bypassed (%.2fs)",
+            word_count, max_words, time.perf_counter() - t0,
         )
         if callback:
-            callback("retrieved", f"Single-page resume ({word_count} words): Full context preserved (RAG bypassed)")
+            callback("retrieved", f"Short resume ({word_count} words): full context preserved")
         return {
+            "full_resume_text": full_text,
             "resume_chunks": [full_text],
             "retrieved_chunks": [full_text],
         }
 
-    # Multi-page resumes: section-aware chunking + hybrid retrieval
-    resume_chunks = load_and_chunk_pdf(state["resume_pdf_bytes"])
-    logger.info("Node 1 — PDF chunked: %d chunks (%.2fs)", len(resume_chunks), time.perf_counter() - t0)
+    # Longer resumes: section-aware chunking + hybrid retrieval.
+    # Chunk the text already extracted above rather than re-parsing the PDF.
+    resume_chunks = section_aware_chunk_resume(
+        full_text,
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+    )
+    logger.info(
+        "Node 1 — PDF chunked: %d chunks from %d words (%.2fs)",
+        len(resume_chunks), word_count, time.perf_counter() - t0,
+    )
 
     t1 = time.perf_counter()
     context = retrieve_relevant_chunks(
@@ -520,146 +569,146 @@ def node_extract_and_retrieve(state: ResumeAnalysisState) -> dict:
         resume_chunks=resume_chunks,
         embeddings_model_name=state["embeddings_model_name"],
         k=settings.retrieval_k,
+        top_n=getattr(settings, "retrieval_top_n", 12),
         resume_pdf_bytes=state["resume_pdf_bytes"],
     )
     logger.info(
-        "Node 1 — Hybrid RAG complete: %d chunks retrieved via %d queries (%.2fs)",
-        len(context.retrieved_chunks),
-        context.query_count,
-        time.perf_counter() - t1,
+        "Node 1 — hybrid RAG complete: %d chunks kept via %d queries (%.2fs)",
+        len(context.retrieved_chunks), context.query_count, time.perf_counter() - t1,
     )
 
     if callback:
-        callback("retrieved", f"Retrieved {len(context.retrieved_chunks)} relevant chunks via {context.query_count}-query Hybrid RAG")
+        callback(
+            "retrieved",
+            f"Retrieved {len(context.retrieved_chunks)} sections via "
+            f"{context.query_count}-query hybrid RAG",
+        )
 
     return {
+        "full_resume_text": full_text,
         "resume_chunks": resume_chunks,
         "retrieved_chunks": context.retrieved_chunks,
     }
 
 
-# ── Node 2: Gap analysis ──────────────────────────────────────────────────────
+# ── Node 2: Consolidated analysis ─────────────────────────────────────────────
 
-NODE_2_SYSTEM_PROMPT = """\
-You are a strict, highly analytical technical recruiter. You must perform a rigorous cross-reference of the Job Description against the candidate's resume. If a core technology, framework, or responsibility listed in the Job Description is missing from the resume, you MUST document it as a gap. Do not be lenient. However, if the candidate explicitly possesses the exact skill, do not document it as a gap.
+SCORING_RUBRIC = """\
+SCORING (integer 0-10, based only on evidence in the resume text):
+  9-10  Every core requirement in the job description is evidenced.
+  6-8   Core requirements evidenced; one or two secondary items unevidenced.
+  3-5   Several core requirements unevidenced, or evidence is indirect.
+  0-2   Most core requirements unevidenced.
 
-Evaluate strictly against the provided Job Description text and retrieved resume sections:
-1. Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.
-2. If a core technology, framework, or responsibility listed in the Job Description is missing from the resume, you MUST document it as a gap.
-3. If the candidate explicitly possesses the exact skill in their uploaded resume text, do not document it as a gap.
-4. Do not invent unlisted requirements, and do not overlook genuine missing qualifications.
+Score the evidence you actually found. Do not reserve the top of the scale, and do
+not deduct for anything the job description does not ask for. A strong resume that
+matches the job description should score high; a weak one should score low.
 """
 
 
-def node_gap_analysis(state: ResumeAnalysisState) -> dict:
-    """Gap analysis pre-pass: evaluates candidate alignment and prepares state for scoring.
+def _build_analysis_prompt(
+    jd: str,
+    resume_context: str,
+    keywords: list[dict],
+    format_instructions: str,
+) -> str:
+    """Assemble the single consolidated analysis prompt."""
+    missing_kw = [k["keyword"] for k in keywords if not k.get("found_in_resume")]
+    found_kw = [k["keyword"] for k in keywords if k.get("found_in_resume")]
 
-    The primary gap identification and scoring are consolidated in node_score_coach
-    to avoid redundant inference latency while preserving strict text matching.
-    """
-    callback: ProgressCallback = state.get("progress_callback")
-    if callback:
-        callback("analyzing_gaps", "Scanning resume against JD with strict text matching…")
-    logger.info("Node 2 — gap analysis pre-pass complete (grounded text matching active)")
-    return {
-        "gap_analysis_text": "",
-        "gaps": [],
-    }
+    keyword_hint = (
+        "AUTOMATED KEYWORD SCAN (advisory only)\n"
+        "A regex scan of the resume produced the lists below. It is literal string\n"
+        "matching with no understanding of synonyms, abbreviations or context, so it\n"
+        "reports false negatives. The RESUME TEXT above is authoritative: if a term\n"
+        "listed as unmatched is in fact evidenced in the resume, disregard this scan\n"
+        "and do not flag it.\n"
+        f"- Matched: {', '.join(found_kw) if found_kw else 'none'}\n"
+        f"- Not matched by the scan: {', '.join(missing_kw) if missing_kw else 'none'}"
+    )
 
+    schema_example = (
+        "OUTPUT EXAMPLE (structure only — do not reuse this content):\n"
+        "{\n"
+        '  "score": 6,\n'
+        '  "gaps": [\n'
+        '    "<Requirement>: no evidence in the resume. The job description states: '
+        '\\"<exact quoted wording from the JD>\\"."\n'
+        "  ],\n"
+        '  "improvements": [\n'
+        '    "Target Area: <resume section> | Action Required: <specific edit> | '
+        'JD Alignment: <which quoted requirement this satisfies>"\n'
+        "  ],\n"
+        '  "preparation": [\n'
+        '    "Target Gap: <requirement> | Study: <topic> | Practice: <exercise> | '
+        'Interview Angle: <likely question>"\n'
+        "  ]\n"
+        "}"
+    )
 
-# ── Node 3: Full consolidated analysis ────────────────────────────────────────
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"{SCORING_RUBRIC}\n\n"
+        "TASK\n"
+        "Compare the resume against the job description and produce the JSON object.\n"
+        "For each requirement written in the job description, look for supporting\n"
+        "evidence in the resume text. Report a gap only where you find none, and quote\n"
+        "the requirement wording when you do. Pair every gap with one improvement and\n"
+        "one preparation item. If nothing is unevidenced, return empty lists.\n\n"
+        "JOB DESCRIPTION:\n"
+        f"{jd}\n\n"
+        "RESUME TEXT:\n"
+        f"{resume_context}\n\n"
+        f"{keyword_hint}\n\n"
+        f"{format_instructions}\n\n"
+        f"{schema_example}\n\n"
+        "Return only the JSON object. No markdown fences, no commentary."
+    )
 
 
 def node_score_coach(state: ResumeAnalysisState) -> dict:
-    """Single consolidated LLM call: gap identification + scoring + improvements + prep.
-
-    Enforces strict grounding, forbids prior-knowledge bias, and eliminates the forced 3 gaps trap.
-    """
+    """Single consolidated LLM call: gaps + score + improvements + preparation."""
     callback: ProgressCallback = state.get("progress_callback")
     if callback:
-        callback("scoring", "Running deep analysis…")
+        callback("scoring", "Running grounded analysis…")
 
     parser = PydanticOutputParser(pydantic_object=ScoreCoachOutput)
-    format_instructions = parser.get_format_instructions()
-    # Support Dual Provider (local Ollama or Groq Cloud API)
     llm = _build_llm(state.get("ollama_model_name"), temperature=0.0)
 
-    # Provide comprehensive context of up to 10 top-ranked retrieved chunks
-    resume_context = "\n\n".join(state["retrieved_chunks"][:10])
+    resume_context = "\n\n".join(state["retrieved_chunks"])
     jd = state["job_description"]
 
-    keywords = extract_jd_keywords(jd, resume_context)
-    found_kw = [k["keyword"] for k in keywords if k.get("found_in_resume")]
-    missing_kw = [k["keyword"] for k in keywords if not k.get("found_in_resume")]
-    kw_reconciliation = (
-        f"- Confirmed Present in Resume: {', '.join(found_kw) if found_kw else 'None'}\n"
-        f"- Explicitly Missing from Resume: {', '.join(missing_kw) if missing_kw else 'None'}"
-    )
+    # Keyword matching runs against the FULL resume, never the retrieved subset.
+    full_text = state.get("full_resume_text") or resume_context
+    keywords = extract_jd_keywords(jd, full_text)
 
-    recruiter_directive = (
-        "You are a strict, highly analytical technical recruiter. You must perform a rigorous cross-reference of the "
-        "Job Description against the candidate's resume. If a core technology, framework, or responsibility listed in the "
-        "Job Description is missing from the resume, you MUST document it as a gap. Do not be lenient. "
-        "However, if the candidate explicitly possesses the exact skill, do not document it as a gap."
-    )
-
-    scoring_rubric = (
-        "MATHEMATICAL SCORING RUBRIC:\n"
-        "You must calculate the final score logically. Start at 10/10. Apply the following strict deductions:\n"
-        "- Deduct 2 to 3 points if core programming languages or primary frameworks are missing.\n"
-        "- Deduct 2 points if the candidate lacks the required years of experience or seniority.\n"
-        "- Deduct 1 to 2 points if secondary tools or cloud platforms are missing.\n"
-        "- A resume that lacks the majority of the JD requirements MUST score below a 4/10.\n"
-        "- Never award a 10/10 unless the candidate is a flawless match."
-    )
-
-    prompt = (
-        f"{recruiter_directive}\n\n"
-        f"{scoring_rubric}\n\n"
-        "STRICT GROUNDING INSTRUCTIONS:\n"
-        "1. Forbid prior-knowledge bias: evaluate strictly against what is written in the JD, nothing else.\n"
-        "2. Cross-reference every core requirement, technology, framework, and responsibility in the JD with the RESUME CONTEXT.\n"
-        "3. If a core technology, framework, or responsibility listed in the Job Description is missing from the resume, you MUST document it as a gap. Do not be lenient.\n"
-        "4. If a required skill or tool (e.g., 'Redis', 'OCI', 'Docker', 'FastAPI', 'Python', 'C++', 'C#') is explicitly present in the candidate's resume text, IT IS NOT A GAP. Do NOT claim the candidate lacks something they explicitly have.\n"
-        "5. Review the ATS KEYWORD RECONCILIATION below. Any skills marked as 'Explicitly Missing from Resume' MUST be factored into your gap analysis and score deductions.\n"
-        "6. ONLY penalize for skills, technologies, or qualifications that are EXPLICITLY WRITTEN in the JOB DESCRIPTION below.\n"
-        "7. DO NOT invent or assume unlisted tools, cloud providers, or frameworks not mentioned in the JD.\n"
-        "8. For every identified gap, provide a concrete resume bullet improvement and an interview preparation roadmap item.\n"
-        "9. Calculate the final score using the MATHEMATICAL SCORING RUBRIC above. Do not default to high scores when requirements are missing.\n\n"
-        "JOB DESCRIPTION:\n"
-        f"{jd}\n\n"
-        "RESUME CONTEXT (retrieved sections):\n"
-        f"{resume_context}\n\n"
-        "ATS KEYWORD RECONCILIATION:\n"
-        f"{kw_reconciliation}\n\n"
-        f"{format_instructions}\n\n"
-        "OUTPUT SCHEMA EXAMPLE (Return ONLY valid JSON matching this structure):\n"
-        "{\n"
-        '  "score": 3,\n'
-        '  "gaps": [\n'
-        '    "Missing JD Requirement: The resume lacks evidence for <Explicit Skill from JD>. The JD explicitly states: <Quote exact requirement from JD>."\n'
-        "  ],\n"
-        '  "improvements": [\n'
-        '    "Target Area: Experience Section | Action Required: Add an explicit bullet point demonstrating how you implemented <Missing Skill> with measurable production impact. | JD Alignment: Directly satisfies the explicit JD requirement for <Missing Skill>."\n'
-        "  ],\n"
-        '  "preparation": [\n'
-        '    "Target Gap: <Missing Skill> | Study: Key official documentation and best practices for <Missing Skill> | Practice: Build a reference demo implementing <Missing Skill> | Interview Angle: How do you address common production challenges in <Missing Skill>?"\n'
-        "  ]\n"
-        "}\n\n"
-        "RULES:\n"
-        "- score: integer (0-10) calculated strictly using the Mathematical Scoring Rubric. Start at 10/10 and apply deductions for missing core languages, frameworks, experience, and secondary tools. Resumes missing the majority of requirements MUST score below 4. Never award a 10/10 unless the candidate is a flawless match.\n"
-        "- gaps: list of strings. Document every genuine missing requirement from the JD. If a skill is explicitly present in the resume, do NOT flag it. Only return [] if the candidate is truly a flawless match.\n"
-        "- improvements: list of actionable resume modification advice addressing each identified gap. Format: 'Target Area: NAME | Action Required: DIRECTIVE | JD Alignment: EXPLANATION'.\n"
-        "- preparation: list of interview study topics addressing each identified gap. Format: 'Target Gap: NAME | Study: RESOURCE | Practice: PROJECT | Interview Angle: QUESTION'.\n"
-        "- Return ONLY valid JSON. No markdown fences. Zero hallucinations."
+    prompt = _build_analysis_prompt(
+        jd=jd,
+        resume_context=resume_context,
+        keywords=keywords,
+        format_instructions=parser.get_format_instructions(),
     )
 
     t0 = time.perf_counter()
     raw = llm.invoke(prompt)
     raw_text = getattr(raw, "content", str(raw))
-    logger.info("Node 3 — consolidated LLM call: %.2fs", time.perf_counter() - t0)
+    logger.info("Node 2 — consolidated LLM call: %.2fs", time.perf_counter() - t0)
 
     result: ScoreCoachOutput = _parse_llm_output(raw_text, parser, ScoreCoachOutput)
+    parse_failed = bool(getattr(result, "parse_failed", False))
+
+    if parse_failed:
+        logger.error("Node 2 — output unparseable; flagging failure instead of returning 0/10")
+        # No progress callback here: the server emits a single terminal `error`
+        # event for this case, so emitting one now would send two.
+        return {
+            "score": 0,
+            "gaps": [],
+            "improvements": [],
+            "preparation": [],
+            "keywords": keywords,
+            "parse_failed": True,
+        }
 
     score = max(0, min(10, getattr(result, "score", 0) or 0))
     gaps = getattr(result, "gaps", []) or []
@@ -667,11 +716,8 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
     preparation = getattr(result, "preparation", []) or []
 
     logger.info(
-        "Node 3 — Final: score=%d gaps=%d improvements=%d preparation=%d",
-        score,
-        len(gaps),
-        len(improvements),
-        len(preparation),
+        "Node 2 — final: score=%d gaps=%d improvements=%d preparation=%d",
+        score, len(gaps), len(improvements), len(preparation),
     )
 
     if callback:
@@ -683,6 +729,7 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
         "improvements": improvements,
         "preparation": preparation,
         "keywords": keywords,
+        "parse_failed": False,
     }
 
 
@@ -692,23 +739,23 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
 def build_resume_analysis_graph(model: str = settings.ollama_model):
     """Compile and return the LangGraph analysis pipeline.
 
-    Args:
-        model: Ollama model tag.  Defaults to ``settings.ollama_model``.
+    The former ``gap_analysis`` node was a no-op that returned empty values and made
+    no LLM call, so it has been removed. Gap identification happens in
+    ``score_and_coach``.
 
-    Returns:
-        A compiled ``StateGraph`` ready for ``.invoke()``.
+    Args:
+        model: Retained for backwards compatibility; nodes read
+            ``state["ollama_model_name"]`` so the per-request override works.
     """
-    _ = model  # Retained for backwards-compatibility; nodes use state["ollama_model_name"]
+    _ = model
     graph = StateGraph(ResumeAnalysisState)
 
     graph.add_node("extract_and_retrieve", node_extract_and_retrieve)
-    graph.add_node("gap_analysis", node_gap_analysis)
     graph.add_node("score_and_coach", node_score_coach)
 
     graph.set_entry_point("extract_and_retrieve")
-    graph.add_edge("extract_and_retrieve", "gap_analysis")
-    graph.add_edge("gap_analysis", "score_and_coach")
+    graph.add_edge("extract_and_retrieve", "score_and_coach")
     graph.add_edge("score_and_coach", END)
 
-    logger.info("LangGraph pipeline compiled: 3 nodes")
+    logger.info("LangGraph pipeline compiled: 2 nodes")
     return graph.compile()

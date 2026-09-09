@@ -233,8 +233,13 @@ def test_build_llm_dual_provider_selection(monkeypatch):
     # Test Ollama provider
     monkeypatch.setattr(settings, "llm_provider", "ollama")
     ollama_llm = _build_llm(model="qwen3.5:9b")
-    assert isinstance(ollama_llm, Ollama)
-    assert ollama_llm.model == "qwen3.5:9b"
+    try:
+        from langchain_ollama import OllamaLLM
+        expected_types = (Ollama, OllamaLLM)
+    except ImportError:
+        expected_types = (Ollama,)
+    assert isinstance(ollama_llm, expected_types)
+    assert getattr(ollama_llm, "model", None) == "qwen3.5:9b"
 
 
 def test_empty_string_schema_failure_mitigation():
