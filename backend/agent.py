@@ -356,9 +356,9 @@ def _parse_llm_output(raw: str, parser: PydanticOutputParser, model_cls):
         "All parse attempts failed for %s. Raw output (first 600 chars): %s",
         model_cls.__name__, (raw or "")[:600],
     )
-    failed = model_cls()
-    failed.parse_failed = True
-    return failed
+    return model_cls.model_construct(
+        score=0, gaps=[], improvements=[], preparation=[], parse_failed=True
+    )
 
 
 def _first_list(data: dict, keys: list[str]) -> list:

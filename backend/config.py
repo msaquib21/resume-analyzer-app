@@ -40,11 +40,11 @@ def _parse_list(raw: str | list, fallback: List[str]) -> List[str]:
 
 
 _DEFAULT_MODELS = [
-    "qwen3.5:9b",      # Recommended: 9.65B, 256K context, reliable schema adherence
-    "qwen3.5:27b",     # Better still if you have the RAM
-    "qwen3.5:4b",      # Faster, less reliable on structured output
-    "qwen2.5:7b",      # Text-only fallback
-    "llama3.1:8b",     # Text-only fallback
+    "qwen2.5:3b",      # Ultra-fast local execution (~3s) - recommended default
+    "qwen3.5:9b",      # Next-gen reasoning with large context (requires 16GB+ RAM)
+    "qwen2.5-coder:7b",# Code and technical specialist
+    "qwen2.5:7b",      # Enhanced general reasoning
+    "llama3.1:latest", # Llama 3.1 fallback
 ]
 
 
@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # Swap model via environment variable OLLAMA_MODEL, or per-request via the
     # `model` form field on /analyze and /analyze/stream.
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3.5:9b"
+    ollama_model: str = "qwen2.5:3b"
     # Declared as a string so bare and comma-separated values work; read the
     # parsed list via the `available_models` property below.
     available_models_raw: str = Field(
@@ -77,25 +77,13 @@ class Settings(BaseSettings):
     ollama_temperature: float = 0.0
 
     # ── Sampling overrides ────────────────────────────────────────────────
-    # qwen3.5 ships with presence_penalty 1.5 and temperature 1 in its Modelfile.
-    # A high presence penalty discourages reusing tokens already emitted, which is
-    # actively wrong for this workload: the output repeats the same JSON keys and
-    # the same field labels across every list item. Left at 1.5 the model drifts
-    # away from the schema partway through a long response.
-    #
-    # temperature is pinned to 0.0 at the call site. repeat_penalty is neutralised
-    # here. presence_penalty cannot be set through LangChain's Ollama wrapper — see
-    # the Modelfile note in the README if you want it fully off.
     ollama_top_k: int = 20
     ollama_top_p: float = 0.95
     ollama_repeat_penalty: float = 1.0
 
     # ── Ollama Runtime Window ─────────────────────────────────────────────
-    # num_ctx must cover prompt + generation. The analysis prompt runs ~2,000-2,500
-    # tokens before the resume and JD are added; 4096 overflows on realistic input
-    # and Ollama silently drops tokens, truncating the JSON mid-object.
-    ollama_num_ctx: int = 8192
-    ollama_num_predict: int = 1500
+    ollama_num_ctx: int = 4096
+    ollama_num_predict: int = 1200
 
     # ── Embeddings ────────────────────────────────────────────────────────
     embeddings_model: str = "sentence-transformers/all-MiniLM-L6-v2"

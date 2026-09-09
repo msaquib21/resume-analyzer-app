@@ -239,6 +239,12 @@ async def analyze(
                 detail=f"Analysis pipeline failed: {exc}",
             )
 
+    if result.get("parse_failed"):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The model's output could not be parsed into a structured report.",
+        )
+
     elapsed = time.perf_counter() - t0
     keywords = _build_keyword_matches(result.get("keywords", []))
 
@@ -278,43 +284,42 @@ async def analyze(
     response_class=StreamingResponse,
 )
 async def analyze_stream(
-    job_description: str = Form(...),
-    resume_pdf: UploadFile = File(...),
-    model: str | None = Form(None),
+    resume_pdf: UploadFile = File(..., description="Candidate resume PDF file"),
+    job_description: str = Form(..., description="Target Job Description text"),
+    model: Optional[str] = Form(None, description="Ollama model override"),
 ) -> StreamingResponse:
-    logger.info(
-        "POST /analyze/stream — file=%s size=~%s model=%s | JD length=%d (preview: %.80r)",
-        resume_pdf.filename,
-        resume_pdf.size,
-        model or settings.ollama_model,
-        len(job_description),
-        job_description[:80],
-    )
+    """Run the analysis pipeline and stream status updates via Server-Sent Events (SSE).
+
+    Client receives newline-delimited SSE messages:
+      ``data: {"event": "extracting", "message": "..."}``
+      ``data: {"event": "retrieved", "message": "..."}``
+      ``data: {"event": "scoring", "message": "..."}``
+      ``data: {"event": "result", "data": {...}}``
+      ``data: {"event": "error", "message": "..."}``
+    """
     pdf_bytes = await resume_pdf.read()
-
     if not pdf_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Uploaded PDF is empty.",
-        )
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-    if _analysis_semaphore.locked():
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Server is busy — max {settings.max_concurrent_analyses} concurrent analyses allowed.",
-        )
+    target_model = model or settings.ollama_model
+    resume_filename = resume_pdf.filename or "uploaded_resume.pdf"
 
-    resume_filename = resume_pdf.filename or "unknown.pdf"
-    event_queue: queue.Queue = queue.Queue()
+    async def _event_generator():
+        event_queue = queue.Queue()
 
-    def _progress_callback(stage: str, message: str) -> None:
-        event_queue.put({"event": stage, "message": message})
+        def _progress(stage: str, message: str) -> None:
+            event_queue.put({"event": stage, "message": message})
 
-    payload = _build_graph_payload(job_description, pdf_bytes, callback=_progress_callback, model=model)
+        payload = {
+            "job_description": job_description,
+            "resume_pdf_bytes": pdf_bytes,
+            "embeddings_model_name": settings.embeddings_model,
+            "ollama_model_name": target_model,
+            "progress_callback": _progress,
+        }
 
-    async def _event_generator() -> AsyncGenerator[str, None]:
-        t0 = time.perf_counter()
         loop = asyncio.get_running_loop()
+        t0 = time.perf_counter()
 
         async with _analysis_semaphore:
             graph_future = loop.run_in_executor(None, graph.invoke, payload)
@@ -336,6 +341,18 @@ async def analyze_stream(
 
             try:
                 result = await graph_future
+                if result.get("parse_failed"):
+                    logger.warning("Analysis failed: LLM output could not be parsed as JSON.")
+                    yield _fmt({
+                        "event": "error",
+                        "message": (
+                            "The model's output could not be parsed into a structured report. "
+                            "This usually happens when the model times out or runs out of memory. "
+                            "Please try switching to 'qwen2.5:3b' in the sidebar for fast, reliable local inference."
+                        )
+                    })
+                    return
+
                 elapsed = time.perf_counter() - t0
                 keywords = _build_keyword_matches(result.get("keywords", []))
 

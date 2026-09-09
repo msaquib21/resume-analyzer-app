@@ -135,6 +135,11 @@ class GapAnalysisOutput(BaseModel):
         ),
     )
 
+    parse_failed: bool = Field(
+        default=False,
+        description="Flag indicating if the LLM output could not be parsed into the schema.",
+    )
+
     @field_validator("gaps", mode="before")
     @classmethod
     def clean_gaps(cls, v: Any) -> list[str]:
@@ -174,6 +179,10 @@ class ScoreCoachOutput(BaseModel):
             "Optional list of specific interview study topics aligned strictly to the identified job description gaps and weaknesses. "
             "If there are no items to report, you MUST return a perfectly empty list []. Do NOT return lists containing empty strings or placeholder text."
         ),
+    )
+    parse_failed: bool = Field(
+        default=False,
+        description="Flag indicating if the LLM output could not be parsed into the schema.",
     )
 
     @field_validator("gaps", "improvements", "preparation", mode="before")
