@@ -22,7 +22,7 @@ import logging
 import queue
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, List, Optional
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
