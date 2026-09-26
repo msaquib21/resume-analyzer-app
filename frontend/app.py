@@ -839,16 +839,41 @@ with st.sidebar:
                 unsafe_allow_html=True,
             )
     except Exception:
-        st.session_state.selected_model = "qwen2.5:3b"
-        st.markdown(
-            """
-            <div style="padding: 12px; border-radius: 10px; background: rgba(255,64,96,0.05); border: 1px solid rgba(255,64,96,0.2);">
-              <div style="color: #FF4060; font-size: 0.82rem; font-weight: 700;">⚠️ Backend Server Not Detected</div>
-              <div style="color: #8899B4; font-size: 0.72rem; margin-top: 4px;">Run `uvicorn backend.server:app --port 8000`</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        groq_key = os.getenv("GROQ_API_KEY")
+        if groq_key:
+            active_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+            st.session_state.selected_model = active_model
+            st.markdown(
+                f"""
+                <div style="padding: 12px; border-radius: 10px; background: rgba(0,255,163,0.03); border: 1px solid rgba(0,255,163,0.25); margin-bottom: 12px;">
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <div style="width:8px; height:8px; border-radius:50%; background:#00FFA3; box-shadow: 0 0 10px #00FFA3;"></div>
+                    <span style="color: #EDF2FF; font-size: 0.82rem; font-weight: 700;">Cloud AI (Groq): Connected</span>
+                  </div>
+                  <div style="color: #8899B4; font-size: 0.74rem; margin-top: 6px; font-family: var(--mono);">
+                    Model: {active_model}
+                  </div>
+                  <div style="color: #506282; font-size: 0.70rem; margin-top: 4px;">
+                    Engine: Direct LangGraph In-Process
+                  </div>
+                  <div style="margin-top: 8px; display:inline-block; padding: 2px 10px; border-radius: 20px; background: rgba(0,255,163,0.08); border: 1px solid rgba(0,255,163,0.25); color: #00FFA3; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;">
+                    ⚡ High-Speed Cloud Inference
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.session_state.selected_model = "qwen2.5:3b"
+            st.markdown(
+                """
+                <div style="padding: 12px; border-radius: 10px; background: rgba(255,64,96,0.05); border: 1px solid rgba(255,64,96,0.2);">
+                  <div style="color: #FF4060; font-size: 0.82rem; font-weight: 700;">⚠️ Backend Server Not Detected</div>
+                  <div style="color: #8899B4; font-size: 0.72rem; margin-top: 4px;">Run `uvicorn backend.server:app --port 8000`</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 # ---------------------------------------------------------------------------
 # View 1: New Resume Analysis
@@ -1087,48 +1112,83 @@ def render_analysis_page():
             error_msg = st.session_state.error
             elapsed = 0.0
 
-            # Execute SSE Stream with verified active JD payload
+            # Execute analysis: Try backend API first, seamlessly fall back to direct in-process engine
             if not out and not error_msg:
+                resume_bytes = resume_file.getvalue()
+                used_direct = False
+
+                # Step 1: Try remote API if BACKEND_URL is explicitly set and reachable
                 try:
-                    resume_bytes = resume_file.getvalue()
                     files = {"resume_pdf": (resume_file.name, resume_bytes, "application/pdf")}
                     data = {
                         "job_description": active_jd,
-                        "model": st.session_state.get("selected_model", "qwen3.5:9b"),
+                        "model": st.session_state.get("selected_model", "openai/gpt-oss-120b"),
                     }
+                    with requests.post(f"{BACKEND_URL}/analyze/stream", data=data, files=files, stream=True, timeout=12) as resp:
+                        if resp.status_code == 200:
+                            for raw_line in resp.iter_lines():
+                                if not raw_line:
+                                    continue
+                                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                                if not line.startswith("data:"):
+                                    continue
+                                payload_str = line[len("data:"):].strip()
+                                try:
+                                    evt = json.loads(payload_str)
+                                except json.JSONDecodeError:
+                                    continue
 
-                    with requests.post(f"{BACKEND_URL}/analyze/stream", data=data, files=files, stream=True, timeout=420) as resp:
-                        resp.raise_for_status()
-                        for raw_line in resp.iter_lines():
-                            if not raw_line:
-                                continue
-                            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-                            if not line.startswith("data:"):
-                                continue
-                            payload_str = line[len("data:"):].strip()
-                            try:
-                                evt = json.loads(payload_str)
-                            except json.JSONDecodeError:
-                                continue
+                                event_type = evt.get("event", "")
+                                event_msg = evt.get("message", "")
 
-                            event_type = evt.get("event", "")
-                            event_msg = evt.get("message", "")
+                                if event_type == "result":
+                                    out = evt.get("data", {})
+                                elif event_type == "error":
+                                    error_msg = event_msg
+                                else:
+                                    loading_placeholder.markdown(_loading_html(event_type, event_msg), unsafe_allow_html=True)
+                        else:
+                            used_direct = True
+                except Exception:
+                    used_direct = True
 
-                            if event_type == "result":
-                                out = evt.get("data", {})
-                            elif event_type == "error":
-                                error_msg = event_msg
-                            else:
-                                loading_placeholder.markdown(_loading_html(event_type, event_msg), unsafe_allow_html=True)
+                # Step 2: Fall back to direct in-process LangGraph engine if API was unreachable
+                if (used_direct or not out) and not error_msg:
+                    try:
+                        from backend.agent import build_resume_analysis_graph
+                        from backend.config import settings
 
-                    st.session_state.out = out
-                    st.session_state.error = error_msg
-                except requests.exceptions.ConnectionError:
-                    st.session_state.error = "Cannot reach backend server at http://localhost:8000. Ensure uvicorn is running."
-                except requests.exceptions.RequestException as exc:
-                    st.session_state.error = f"Analysis request failed: {exc}"
-                except Exception as exc:
-                    st.session_state.error = f"Unexpected error: {exc}"
+                        def _direct_progress(stage: str, message: str) -> None:
+                            loading_placeholder.markdown(_loading_html(stage, message), unsafe_allow_html=True)
+
+                        _direct_progress("extracting", "Parsing resume and extracting evidence…")
+                        target_model = st.session_state.get("selected_model") or settings.ollama_model
+                        payload = {
+                            "job_description": active_jd,
+                            "resume_pdf_bytes": resume_bytes,
+                            "embeddings_model_name": settings.embeddings_model,
+                            "ollama_model_name": target_model,
+                            "progress_callback": _direct_progress,
+                        }
+                        graph = build_resume_analysis_graph(model=target_model)
+                        res = graph.invoke(payload)
+
+                        if res.get("parse_failed"):
+                            error_msg = "The model's output could not be parsed into a structured report."
+                        else:
+                            out = {
+                                "score": res.get("score", 0),
+                                "gaps": res.get("gaps", []),
+                                "improvements": res.get("improvements", []),
+                                "preparation": res.get("preparation", []),
+                                "keywords": res.get("keywords", []),
+                                "analysis_id": f"cloud_{int(time.time())}",
+                            }
+                    except Exception as exc:
+                        error_msg = f"Analysis error: {exc}"
+
+                st.session_state.out = out
+                st.session_state.error = error_msg
                 elapsed = time.perf_counter() - t0
 
             loading_placeholder.empty()
@@ -1387,14 +1447,35 @@ def render_analysis_page():
 
                 # PDF Export Action
                 st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
-                if analysis_id:
+                if analysis_id or out:
                     try:
-                        pdf_resp = requests.post(f"{BACKEND_URL}/export/pdf", data={"analysis_id": analysis_id}, timeout=30)
-                        if pdf_resp.status_code == 200:
+                        pdf_bytes = None
+                        if analysis_id and not str(analysis_id).startswith("cloud_"):
+                            try:
+                                pdf_resp = requests.post(f"{BACKEND_URL}/export/pdf", data={"analysis_id": analysis_id}, timeout=8)
+                                if pdf_resp.status_code == 200:
+                                    pdf_bytes = pdf_resp.content
+                            except Exception:
+                                pass
+
+                        if not pdf_bytes:
+                            from backend.pdf_export import generate_report
+                            pdf_bytes = generate_report(
+                                score=score,
+                                gaps=gaps,
+                                improvements=improvements,
+                                preparation=prep,
+                                keywords=keywords,
+                                resume_filename=resume_file.name if resume_file else "resume.pdf",
+                                jd_snippet=active_jd[:300],
+                                elapsed_seconds=elapsed,
+                            )
+
+                        if pdf_bytes:
                             st.download_button(
                                 label="📥  Download Executive PDF Report",
-                                data=pdf_resp.content,
-                                file_name=f"resume_analysis_{analysis_id}.pdf",
+                                data=pdf_bytes,
+                                file_name=f"resume_analysis_{analysis_id or 'report'}.pdf",
                                 mime="application/pdf",
                                 use_container_width=True,
                             )
