@@ -433,6 +433,7 @@ def retrieve_relevant_chunks(
     resume_chunks: List[str],
     embeddings_model_name: str,
     k: int = 10,
+    top_n: Optional[int] = None,
     resume_pdf_bytes: Optional[bytes] = None,
 ) -> RetrievedContext:
     """Multi-query Hybrid retrieval (Dense ChromaDB + Sparse BM25) with Reciprocal Rank Fusion."""
@@ -488,8 +489,14 @@ def retrieve_relevant_chunks(
         len(ranked_lists),
     )
 
+    # Keep the highest-ranked evidence while restoring source order. This makes
+    # the context readable for the LLM and honours the caller's configured cap.
+    selected = fused[:top_n] if top_n is not None else fused
+    source_order = {chunk: index for index, chunk in enumerate(resume_chunks)}
+    selected.sort(key=lambda chunk: source_order.get(chunk, len(resume_chunks)))
+
     return RetrievedContext(
-        retrieved_chunks=fused,
+        retrieved_chunks=selected,
         all_chunks_preview=resume_chunks[:3],
         query_count=len(queries),
     )

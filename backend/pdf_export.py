@@ -50,21 +50,21 @@ def generate_report(
     pdf.cell(epw, 8, "1. Match Assessment", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("helvetica", "B", 24)
-    if score >= 8:
+    if score >= 80:
         pdf.set_text_color(0, 160, 90)
-        interp = "Strong Match — Candidate aligns closely with JD requirements"
-    elif score >= 5:
+        interp = "Strong Match - Candidate aligns closely with JD requirements"
+    elif score >= 50:
         pdf.set_text_color(220, 140, 0)
-        interp = "Partial Match — Critical gaps need targeted resume adjustments"
+        interp = "Partial Match - Critical gaps need targeted resume adjustments"
     else:
         pdf.set_text_color(220, 40, 60)
-        interp = "Low Match — Significant technical & domain gaps identified"
+        interp = "Low Match - Significant technical & domain gaps identified"
 
-    pdf.cell(epw, 12, f"Score: {score}/10", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(epw, 12, f"Score: {score}/100", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("helvetica", "I", 10)
     pdf.set_text_color(80, 80, 90)
-    pdf.cell(epw, 6, interp, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(epw, 6, safe(interp), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
 
     # ── Keyword Match Section ──────────────────────────────────────────

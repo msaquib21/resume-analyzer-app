@@ -51,26 +51,29 @@
 - **Single-Page Resume RAG Bypass**: Automatic word-count evaluation. Resumes under 1,000 words (~1 page) bypass chunking and vector search to be evaluated as a single cohesive unit, preventing fragmentation of dense skill sections.
 - **Section-Aware Multi-Column PDF Parsing**: Layout-aware parsing disentangles multi-column PDF layouts vertically, preventing skills (e.g., "Redis", "Docker") and experience from horizontally coalescing into unreadable lines.
 - **Symbol-Aware ATS Keyword Matcher**: Tokenizer with lookaround regex boundaries accurately captures technical symbols such as `C++`, `C#`, `.NET`, `Node.js`, and `React.js` without boundary degradation.
-- **Negative Constraint Recalibration & Mathematical Rubric**: Replaced timid negative constraints with an objective technical recruiter persona and a strict mathematical scoring rubric (starting at 10/10 with standard deductions for missing core languages, frameworks, seniority, and cloud tools).
-- **Empty String Schema Failure Defense**: Pydantic v2 `@field_validator(mode="before")` hooks and frontend defensive sanitizers clean dirty list objects into pure empty arrays `[]`, rendering high-contrast celebratory success cards for perfect-match categories.
+- **Deterministic Evidence-Based Scoring**: The 0–100 match score is calculated from verified ATS keyword coverage, then reduced by 8 points for each evidence-grounded JD gap (capped at 24 points). The LLM explains gaps, but cannot independently turn a partially matched resume into a zero score.
+- **Required Score & Schema Failure Defense**: The model response must include a score. Missing or unparseable score data now fails the analysis instead of silently rendering as `0/100`; Pydantic v2 `@field_validator(mode="before")` hooks and frontend sanitizers also clean malformed list fields.
 
 ---
 
 ## 🧠 Key Architecture & Engineering Breakthroughs
 
-### 1. Mathematical Scoring Rubric & Anti-Hallucination Grounding
-Large Language Models are prone to either hallucinating missing requirements or timidly defaulting to high scores ("negative constraint overcorrection"). To solve this:
-- **Base Score = 10/10**: Deduct **2 to 3 points** for missing core programming languages or primary frameworks.
-- **Experience Deductions**: Deduct **2 points** if the candidate lacks the required years of experience or seniority.
-- **Secondary Tool Deductions**: Deduct **1 to 2 points** if secondary tools or cloud platforms are missing.
-- **Threshold Rule**: Resumes missing the majority of JD requirements **must score below 4/10**. 10/10 is reserved strictly for flawless matches.
+### 1. Deterministic Evidence Score & Anti-Hallucination Grounding
+The application separates measurable evidence from LLM-written coaching. The LLM identifies and explains JD-specific gaps; it does not determine the numeric result.
+
+```
+match score = verified ATS keyword coverage − gap deduction
+gap deduction = min(8 × verified gap count, 24)
+```
+
+For example, 7 of 13 verified keyword matches (54%) and one verified JD gap produces a score of **46/100**. This prevents a malformed response or an arbitrary LLM `0` from overriding observed resume evidence. A score of `0` is therefore only possible when no supported JD keywords are found, or when deductions exhaust a very small coverage score.
 
 ### 2. Multi-Query Hybrid RAG Pipeline
 For multi-page resumes:
 1. **Section-Aware Chunking**: Regex-based header detection groups sections (`Skills`, `Experience`, `Projects`, `Education`) with a 600-character chunk size and 20% overlap (`120 characters`).
 2. **Multi-Query Decomposition**: Generates distinct query perspectives from the JD (core requirements, programming languages, cloud/DevOps, architecture).
 3. **Weighted Reciprocal Rank Fusion (RRF)**: Fuses lexical sparse search (`rank-bm25`) and dense semantic vectors (`all-MiniLM-L6-v2` in ChromaDB) with configurable weights (`50/50`).
-4. **Authoritative Keyword Reconciliation**: Reconciled keyword scan results are injected directly into the LLM prompt to anchor evaluation to verified facts.
+4. **Keyword Reconciliation & Retrieval Cap**: The full extracted resume remains authoritative for keyword checks. Multi-query RRF keeps the configured top-N ranked chunks and restores document order before sending context to the LLM.
 
 ### 3. Self-Healing Schema Fallbacks
 LLMs occasionally wrap JSON in markdown blocks, add trailing commas, or echo raw schema properties. The pipeline implements a 4-tier fallback:
@@ -83,11 +86,12 @@ LLMs occasionally wrap JSON in markdown blocks, add trailing commas, or echo raw
 
 ## ✨ Core Application Features
 
-### 1. 📊 Calibrated Match Score Gauge (0–10)
+### 1. 📊 Evidence-Based Match Score Gauge (0–100)
 - Animated circular SVG gauge color-coded to candidate alignment:
-  - 🟢 **8–10**: Strong Alignment (Green `#00FFA3`)
-  - 🟡 **5–7**: Moderate Match (Amber `#FFB800`)
-  - 🔴 **0–4**: Critical Gaps Present (Rose `#FF4060`)
+  - 🟢 **80–100**: Strong Alignment (Green `#00FFA3`)
+  - 🟡 **50–79**: Moderate Match (Amber `#FFB800`)
+  - 🔴 **0–49**: Critical Gaps Present (Rose `#FF4060`)
+- Shows the exact score basis below the gauge: verified keyword coverage and the bounded deduction for evidence-grounded gaps.
 - Displays execution duration and in-memory ChromaDB pipeline timings.
 
 ### 2. 🔍 Identified Skill Gaps Tab
@@ -185,8 +189,8 @@ LLMs occasionally wrap JSON in markdown blocks, add trailing commas, or echo raw
 │  │  │                                                               │  │
 │  │  [Node 2: score_and_coach]                                       │  │
 │  │  ├── Regex & NER Symbol-Aware ATS Keyword Extraction             │  │
-│  │  ├── Recruiter Persona + Mathematical Scoring Rubric             │  │
-│  │  └── Single consolidated LLM call (Gaps + Score + Coach)         │  │
+│  │  ├── Recruiter explanations + deterministic evidence score       │  │
+│  │  └── Single consolidated LLM call (Gaps + Coaching)              │  │
 │  └──────────────────────────────────────────────────────────────────┘  │
 │                                                                        │
 │  ┌────────────────────┐   ┌────────────────────┐   ┌────────────────┐  │
@@ -254,14 +258,33 @@ OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen2.5:3b
 ```
 
-### Mode B: Free Groq Cloud Deployment (Vercel / Render / Railway)
-To deploy publicly without needing an expensive GPU instance:
-1. Obtain a free API key from [console.groq.com](https://console.groq.com/).
-2. Set your environment variables in `.env`:
+### Mode B: Groq Cloud Demo Deployment (Render / Railway)
+To deploy publicly without hosting a GPU or Ollama instance, configure the following **server-side secrets** in your deployment provider. Do not place the API key in the frontend, a committed `.env` file, or GitHub Actions logs.
+
+The default cloud model is `openai/gpt-oss-120b`. It supports JSON object mode and is suitable for the structured analysis response. It is billed by Groq usage, so set an account budget and protect the public endpoint with rate limiting before sharing widely. [Groq model details](https://console.groq.com/docs/model/openai/gpt-oss-120b)
+
 ```env
 LLM_PROVIDER=groq
-GROQ_API_KEY=gsk_your_actual_groq_api_key_here
-GROQ_MODEL=llama-3.1-8b-instant
+GROQ_API_KEY=your_rotated_groq_key
+GROQ_MODEL=openai/gpt-oss-120b
+GITHUB_REPOSITORY_URL=https://github.com/msaquib21/resume-analyzer-app
+```
+
+For a two-service deployment, also set the frontend's `BACKEND_URL` to the public HTTPS URL of the FastAPI service. When both services run in the supplied Docker container, it defaults to `http://localhost:8000` automatically.
+
+The sidebar displays a **Public cloud demo** notice in Groq mode and links recruiters to the GitHub repository for the private, local Ollama architecture.
+
+### Cloud container deployment
+
+The supplied `Dockerfile` is compatible with platforms that inject a `PORT` environment variable. Create a Docker web service, set the four secrets above, and expose the platform-provided port. Do not use `docker-compose.yml` for this mode: it includes the Ollama service intended for local development.
+
+### Local `.env` example
+
+For a local cloud-mode smoke test, copy `.env.example` to `.env`, add a newly generated key, and keep `.env` untracked:
+```env
+LLM_PROVIDER=groq
+GROQ_API_KEY=replace_with_a_deployment_secret
+GROQ_MODEL=openai/gpt-oss-120b
 ```
 
 ---
@@ -312,7 +335,9 @@ All settings can be configured via environment variables or a root `.env` file:
 |---|---|---|
 | `LLM_PROVIDER` | `ollama` | Active provider: `ollama` (local) or `groq` (cloud) |
 | `GROQ_API_KEY` | `None` | API key for Groq Cloud API |
-| `GROQ_MODEL` | `llama-3.1-8b-instant` | Groq cloud model identifier |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq cloud model identifier used by the public demo |
+| `BACKEND_URL` | `http://localhost:8000` | Frontend URL for the FastAPI API; set this for a split-service deployment |
+| `GITHUB_REPOSITORY_URL` | Project repository | Sidebar link to the local Ollama architecture |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama daemon endpoint URL |
 | `OLLAMA_MODEL` | `qwen2.5:3b` | Default Ollama model tag |
 | `AVAILABLE_MODELS` | `qwen2.5:3b,qwen3.5:9b,qwen2.5-coder:7b,...` | Comma-separated list of models for the UI dropdown |
@@ -325,7 +350,7 @@ All settings can be configured via environment variables or a root `.env` file:
 | `CHUNK_OVERLAP` | `120` | 20% chunk overlap preserved across splits |
 | `RETRIEVAL_K` | `10` | Chunks retrieved per query angle |
 | `RETRIEVAL_QUERIES` | `4` | Number of distinct RAG decomposition queries |
-| `RETRIEVAL_TOP_N` | `12` | Chunks retained after Reciprocal Rank Fusion |
+| `RETRIEVAL_TOP_N` | `12` | Highest-ranked chunks retained after Reciprocal Rank Fusion, restored to original document order |
 | `BM25_WEIGHT` | `0.5` | Weight for BM25 lexical search in hybrid fusion |
 | `MAX_CONCURRENT_ANALYSES` | `3` | Asynchronous rate-limiting semaphore limit |
 | `GRAPH_TIMEOUT_SECONDS` | `300` | Timeout threshold for pipeline completion |
@@ -337,7 +362,7 @@ All settings can be configured via environment variables or a root `.env` file:
 
 ## 🧪 Testing & Quality Assurance
 
-The codebase includes an automated unit and integration test suite covering PDF parsing, normalization, hybrid RAG weights, Pydantic schemas, and provider routing:
+The codebase includes automated unit and integration coverage for PDF parsing, normalization, hybrid RAG weights, Pydantic schemas, provider routing, and deterministic score calculation:
 
 ```bash
 # Run the complete test suite
@@ -347,11 +372,11 @@ pytest tests/ -v
 ruff check backend/ tests/
 ```
 
-### Verified Test Suite (21 Tests Passing)
+### Test Coverage
 
 | Test Module | Tests | Functionality Covered |
 |---|---|---|
-| `tests/test_parser.py` | 18 tests | Layout-aware multi-column parsing, dense skill preservation, BM25/ChromaDB RRF fusion, single-page RAG bypass, C++/C# technical symbol boundaries, flexible gap count, Dual-LLM provider routing, and empty string schema mitigation. |
+| `tests/test_parser.py` | Parser and scoring tests | Layout-aware multi-column parsing, dense skill preservation, BM25/ChromaDB RRF fusion, single-page RAG bypass, C++/C# technical symbol boundaries, schema normalization, provider routing, and the regression that prevents a 7/13 match with one gap from becoming a zero score. |
 | `tests/test_history.py` | 3 tests | SQLite CRUD operations: save analysis, retrieve records, cascade deletion, and chronological score trend data. |
 
 ---

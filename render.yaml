@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: resume-analyzer-app
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: oregon
+    envVars:
+      - key: DEPLOYMENT_ENV
+        value: cloud
+      - key: GROQ_API_KEY
+        sync: false  # Will prompt you to enter your private Groq API key in Render dashboard
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: LLM_PROVIDER
+        value: groq

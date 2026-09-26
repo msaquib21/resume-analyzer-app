@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Callable, List, Optional, TypedDict
@@ -97,22 +98,30 @@ class ResumeAnalysisState(TypedDict):
 # passed as a separate message.
 
 SYSTEM_PROMPT = """\
-You are a technical recruiter performing evidence-based resume screening.
+You are a strict technical recruiter performing evidence-based resume screening.
 
-GROUNDING RULES (these override any other instruction):
-1. The RESUME TEXT is the sole source of truth about the candidate. The JOB
-   DESCRIPTION is the sole source of truth about what is required.
-2. Never introduce a technology, tool, cloud platform, framework, certification
-   or qualification that does not appear verbatim in the job description. Do not
-   supply requirements the job description omits, however conventional they seem
-   for the role.
-3. If evidence for a requirement appears anywhere in the resume text, that
-   requirement is satisfied. Do not flag it, and do not suggest adding it.
-4. Every gap you report must quote the exact requirement wording from the job
-   description. If you cannot quote it, it is not a gap — omit it.
-5. Report the number of gaps the evidence actually supports. Zero is a valid
-   answer. Do not pad the list to reach a target count.
-6. Never suggest an improvement describing something the resume already contains.
+YOUR ONLY JOB: Compare THIS specific candidate's resume against THIS specific job description.
+You are NOT evaluating a generic candidate. You are evaluating the INDIVIDUAL whose resume appears below.
+
+ABSOLUTE GROUNDING RULES (these override every other instruction):
+1. The RESUME TEXT below is the sole source of truth about this candidate. Read it word-by-word.
+   If it is not written in the resume, the candidate does not have it. Period.
+2. The JOB DESCRIPTION is the sole source of truth about requirements. Do not add requirements
+   the JD omits, however conventional they seem for the role.
+3. If evidence for a requirement appears ANYWHERE in the resume text (even in a project or
+   achievements section), that requirement IS satisfied. Do NOT flag it as a gap.
+4. Every gap you report MUST include a direct verbatim quote from the job description proving
+   the requirement exists. If you cannot find that quote, it is NOT a gap — omit it.
+5. Every gap you report MUST also confirm: "I searched the resume text above and found NO
+   mention of [X]." If you DID find a mention, you must NOT report it as a gap.
+6. Report only the gaps the evidence actually supports. Zero gaps is a valid and common answer.
+7. NEVER suggest an improvement for something the resume already shows.
+8. DO NOT use your training knowledge about what skills are "typical" for a role. Only use
+   what is explicitly stated in the JD and the resume.
+
+CRITICAL: Two different candidates with different resumes MUST produce different analyses.
+If your analysis looks identical to what you would write for a different candidate,
+you have failed to read the resume and must start over.
 
 Your output must be a single valid JSON object matching the requested schema.
 """
@@ -123,18 +132,29 @@ Your output must be a single valid JSON object matching the requested schema.
 
 def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
     """Instantiate the configured LLM provider: local Ollama or Groq Cloud API."""
-    provider = getattr(settings, "llm_provider", "ollama").lower()
+    deployment_env = (os.getenv("DEPLOYMENT_ENV") or getattr(settings, "deployment_env", "local")).lower().strip()
+    provider = getattr(settings, "llm_provider", "ollama").lower().strip()
+    use_cloud = (deployment_env == "cloud") or (provider == "groq")
 
-    if provider == "groq":
+    if use_cloud:
         from langchain_groq import ChatGroq
 
-        groq_model = getattr(settings, "groq_model", "llama-3.1-8b-instant")
+        groq_model = getattr(settings, "groq_model", "openai/gpt-oss-120b")
+        groq_api_key = settings.groq_api_key or os.getenv("GROQ_API_KEY")
+        if not groq_api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is required when DEPLOYMENT_ENV=cloud or LLM_PROVIDER=groq. "
+                "Add it as a deployment secret; do not put it in source code."
+            )
         logger.info("Instantiating Groq LLM provider: model=%s", groq_model)
         return ChatGroq(
             model=groq_model,
             temperature=0.0,
-            groq_api_key=settings.groq_api_key,
-            model_kwargs={"response_format": {"type": "json_object"}},
+            groq_api_key=groq_api_key,
+            reasoning_effort="low",
+            model_kwargs={
+                "response_format": {"type": "json_object"},
+            },
         )
 
     target_model = model or settings.ollama_model
@@ -153,14 +173,18 @@ def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
         num_ctx=num_ctx,          # Must cover prompt + generation, or Ollama silently truncates
         num_predict=num_predict,
         keep_alive="15m",
+        # qwen3.5:9b is a "thinking" model: by default it generates a long
+        # <think>...</think> internal chain-of-thought that exhausts num_predict
+        # before writing a single JSON character. reasoning=False disables this.
+        # This is the LangChain OllamaLLM equivalent of Ollama's think=false API option.
+        reasoning=False,
     )
 
-    # Sampling overrides. qwen3.5's Modelfile sets presence_penalty 1.5, which pushes
-    # the model away from reusing the repeated JSON keys and field labels this schema
-    # requires. repeat_penalty is neutralised for the same reason.
-    # Applied opportunistically: the LangChain Ollama wrappers reject unknown fields
-    # and expose different options by version, so a rejection falls back to the base
-    # configuration instead of failing the run.
+    # Sampling overrides applied opportunistically: the LangChain Ollama wrappers
+    # reject unknown fields by version, so a rejection falls back to the base
+    # configuration (which already has reasoning=False).
+    # qwen3.5's Modelfile sets presence_penalty 1.5, which pushes the model away
+    # from reusing repeated JSON keys; repeat_penalty=1.0 neutralises it.
     tuning_kwargs = dict(
         top_k=getattr(settings, "ollama_top_k", 20),
         top_p=getattr(settings, "ollama_top_p", 0.95),
@@ -179,9 +203,8 @@ def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
         return _OllamaCls(**base_kwargs, **tuning_kwargs)
     except Exception as exc:
         logger.warning(
-            "LLM wrapper rejected sampling overrides (%s); using base configuration. "
-            "If output drifts from the schema mid-response, set the parameters in a "
-            "Modelfile instead — see the README.",
+            "LLM wrapper rejected sampling overrides (%s); using base configuration "
+            "(reasoning=False still active).",
             exc,
         )
         return _OllamaCls(**base_kwargs)
@@ -299,7 +322,7 @@ def _parse_llm_output(raw: str, parser: PydanticOutputParser, model_cls):
 
     On total failure returns an instance with ``parse_failed=True`` so the caller can
     surface an error. Previously this returned an all-defaults model, which rendered
-    as a legitimate 0/10 with no gaps and was written to history as a real analysis.
+    as a legitimate 0/100 with no gaps and was written to history as a real analysis.
     """
     cleaned = _clean_json_str(raw)
 
@@ -332,6 +355,13 @@ def _parse_llm_output(raw: str, parser: PydanticOutputParser, model_cls):
                 return _normalize_model_lists(GapAnalysisOutput(gaps=gaps))
 
             if model_cls is ScoreCoachOutput:
+                # A missing score used to be silently converted to 0 by the
+                # Pydantic default, making an incomplete LLM response look like
+                # a real "no match" verdict in the UI and history.
+                if not any(data.get(key) is not None for key in (
+                    "score", "match_score", "final_score", "rating", "matchScore",
+                )):
+                    raise ValueError("LLM response omitted the required score field")
                 score = _coerce_score(data)
                 result = ScoreCoachOutput(
                     score=score,
@@ -373,7 +403,7 @@ def _first_list(data: dict, keys: list[str]) -> list:
 
 
 def _coerce_score(data: dict) -> int:
-    """Pull an integer 0-10 score out of whatever key the model used."""
+    """Pull an integer 0-100 score out of whatever key the model used."""
     raw_score = data.get("score")
     if raw_score is None:
         for sk in ("match_score", "final_score", "rating", "matchScore"):
@@ -390,7 +420,34 @@ def _coerce_score(data: dict) -> int:
         m = re.search(r"\d+", raw_score)
         if m:
             value = int(m.group(0))
-    return max(0, min(10, value))
+    return max(0, min(100, value))
+
+
+def calculate_evidence_score(keywords: list[dict], gaps: list[str]) -> int:
+    """Calculate a stable, explainable score from verified evidence.
+
+    Keyword matching is deterministic and runs over the complete parsed resume.
+    The LLM is used to explain JD-specific gaps, but it must not be able to turn
+    a partially matched resume into a 0 simply by emitting an arbitrary score.
+    Each evidence-grounded gap applies a modest eight-point deduction, capped at
+    24 points so the score remains proportional to measured keyword coverage.
+    """
+    total = len(keywords)
+    if not total:
+        # The JD contains no supported measurable keywords. In this uncommon
+        # case there is no defensible numeric evidence score.
+        logger.warning("calculate_evidence_score: 0 keywords extracted — returning 0")
+        return 0
+
+    found = sum(1 for keyword in keywords if keyword.get("found_in_resume"))
+    keyword_coverage = round(found / total * 100)
+    gap_deduction = min(len(gaps) * 8, 24)
+    final_score = max(0, keyword_coverage - gap_deduction)
+    logger.info(
+        "calculate_evidence_score: %d/%d keywords matched (%d%%) — %d gaps (-%d pts) → score=%d",
+        found, total, keyword_coverage, len(gaps), gap_deduction, final_score,
+    )
+    return final_score
 
 
 # ── ATS keyword extraction ────────────────────────────────────────────────────
@@ -594,11 +651,11 @@ def node_extract_and_retrieve(state: ResumeAnalysisState) -> dict:
 # ── Node 2: Consolidated analysis ─────────────────────────────────────────────
 
 SCORING_RUBRIC = """\
-SCORING (integer 0-10, based only on evidence in the resume text):
-  9-10  Every core requirement in the job description is evidenced.
-  6-8   Core requirements evidenced; one or two secondary items unevidenced.
-  3-5   Several core requirements unevidenced, or evidence is indirect.
-  0-2   Most core requirements unevidenced.
+SCORING (integer 0-100, based only on evidence in the resume text):
+  90-100  Every core requirement in the job description is evidenced.
+  60-89   Core requirements evidenced; one or two secondary items unevidenced.
+  30-59   Several core requirements unevidenced, or evidence is indirect.
+  0-29    Most core requirements unevidenced.
 
 Score the evidence you actually found. Do not reserve the top of the scale, and do
 not deduct for anything the job description does not ask for. A strong resume that
@@ -612,59 +669,60 @@ def _build_analysis_prompt(
     keywords: list[dict],
     format_instructions: str,
 ) -> str:
-    """Assemble the single consolidated analysis prompt."""
+    """Assemble a compact, direct analysis prompt compatible with Ollama format=json.
+
+    Grounding is enforced structurally: each gap entry must include an 'evidence'
+    field quoting the exact JD requirement, which forces the model to read the JD
+    rather than rely on prior knowledge. The schema example shows this structure.
+
+    The multi-phase scratchpad approach (Phase 1/2/3) was removed because it caused
+    qwen3.5:9b to generate thousands of reasoning tokens before the JSON, exhausting
+    num_predict and producing an empty response.
+    """
     missing_kw = [k["keyword"] for k in keywords if not k.get("found_in_resume")]
     found_kw = [k["keyword"] for k in keywords if k.get("found_in_resume")]
 
     keyword_hint = (
-        "AUTOMATED KEYWORD SCAN (advisory only)\n"
-        "A regex scan of the resume produced the lists below. It is literal string\n"
-        "matching with no understanding of synonyms, abbreviations or context, so it\n"
-        "reports false negatives. The RESUME TEXT above is authoritative: if a term\n"
-        "listed as unmatched is in fact evidenced in the resume, disregard this scan\n"
-        "and do not flag it.\n"
-        f"- Matched: {', '.join(found_kw) if found_kw else 'none'}\n"
-        f"- Not matched by the scan: {', '.join(missing_kw) if missing_kw else 'none'}"
+        "KEYWORD SCAN (regex, advisory only — not authoritative):\n"
+        f"  Found in resume: {', '.join(found_kw) if found_kw else 'none'}\n"
+        f"  Not found by scan: {', '.join(missing_kw) if missing_kw else 'none'}\n"
+        "If the full resume text above contains a 'not found' keyword, the scan is wrong — "
+        "do NOT report it as a gap."
     )
 
     schema_example = (
-        "OUTPUT EXAMPLE (structure only — do not reuse this content):\n"
+        "Output ONLY this JSON structure (no markdown, no commentary):\n"
         "{\n"
-        '  "score": 6,\n'
+        '  "score": <integer 0-100>,\n'
         '  "gaps": [\n'
-        '    "<Requirement>: no evidence in the resume. The job description states: '
-        '\\"<exact quoted wording from the JD>\\"."\n'
+        '    "<skill/requirement>: not evidenced in resume. JD requires: \\"<exact JD quote>\\""\n'
         "  ],\n"
         '  "improvements": [\n'
-        '    "Target Area: <resume section> | Action Required: <specific edit> | '
-        'JD Alignment: <which quoted requirement this satisfies>"\n'
+        '    "Target Area: <section> | Action Required: <edit> | JD Alignment: <requirement>"\n'
         "  ],\n"
         '  "preparation": [\n'
-        '    "Target Gap: <requirement> | Study: <topic> | Practice: <exercise> | '
-        'Interview Angle: <likely question>"\n'
+        '    "Target Gap: <skill> | Study: <resource> | Practice: <task> | Interview Angle: <question>"\n'
         "  ]\n"
-        "}"
+        "}\n"
+        "gaps, improvements, and preparation must be empty lists [] if nothing is unevidenced."
     )
 
     return (
         f"{SYSTEM_PROMPT}\n\n"
         f"{SCORING_RUBRIC}\n\n"
-        "TASK\n"
-        "Compare the resume against the job description and produce the JSON object.\n"
-        "For each requirement written in the job description, look for supporting\n"
-        "evidence in the resume text. Report a gap only where you find none, and quote\n"
-        "the requirement wording when you do. Pair every gap with one improvement and\n"
-        "one preparation item. If nothing is unevidenced, return empty lists.\n\n"
-        "JOB DESCRIPTION:\n"
+        "--- JOB DESCRIPTION ---\n"
         f"{jd}\n\n"
-        "RESUME TEXT:\n"
-        f"{resume_context}\n\n"
+        "--- CANDIDATE RESUME ---\n"
+        f"{resume_context}\n"
+        "--- END OF RESUME ---\n\n"
         f"{keyword_hint}\n\n"
-        f"{format_instructions}\n\n"
-        f"{schema_example}\n\n"
-        "Return only the JSON object. No markdown fences, no commentary."
+        "TASK: Compare the candidate resume above against the job description above.\n"
+        "For each JD requirement, check if evidence exists in the resume text.\n"
+        "Only report a gap when you find ZERO evidence in the resume — quote the JD requirement.\n"
+        "Pair each gap with one improvement and one preparation item.\n"
+        "The score must reflect what you found in THIS specific resume, not a generic assessment.\n\n"
+        f"{schema_example}"
     )
-
 
 def node_score_coach(state: ResumeAnalysisState) -> dict:
     """Single consolidated LLM call: gaps + score + improvements + preparation."""
@@ -692,13 +750,18 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
     t0 = time.perf_counter()
     raw = llm.invoke(prompt)
     raw_text = getattr(raw, "content", str(raw))
-    logger.info("Node 2 — consolidated LLM call: %.2fs", time.perf_counter() - t0)
+    elapsed_llm = time.perf_counter() - t0
+    logger.info("Node 2 — consolidated LLM call: %.2fs | output length: %d chars", elapsed_llm, len(raw_text))
+    if not raw_text.strip():
+        logger.error("Node 2 — LLM returned EMPTY output. Model may be in thinking mode or out of tokens.")
+    else:
+        logger.debug("Node 2 — raw output (first 300 chars): %s", raw_text[:300])
 
     result: ScoreCoachOutput = _parse_llm_output(raw_text, parser, ScoreCoachOutput)
     parse_failed = bool(getattr(result, "parse_failed", False))
 
     if parse_failed:
-        logger.error("Node 2 — output unparseable; flagging failure instead of returning 0/10")
+        logger.error("Node 2 — output unparseable; flagging failure instead of returning 0/100")
         # No progress callback here: the server emits a single terminal `error`
         # event for this case, so emitting one now would send two.
         return {
@@ -710,10 +773,10 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
             "parse_failed": True,
         }
 
-    score = max(0, min(10, getattr(result, "score", 0) or 0))
     gaps = getattr(result, "gaps", []) or []
     improvements = getattr(result, "improvements", []) or []
     preparation = getattr(result, "preparation", []) or []
+    score = calculate_evidence_score(keywords, gaps)
 
     logger.info(
         "Node 2 — final: score=%d gaps=%d improvements=%d preparation=%d",
@@ -721,7 +784,7 @@ def node_score_coach(state: ResumeAnalysisState) -> dict:
     )
 
     if callback:
-        callback("complete", f"Analysis complete — score {score}/10")
+        callback("complete", f"Analysis complete — score {score}/100")
 
     return {
         "score": score,

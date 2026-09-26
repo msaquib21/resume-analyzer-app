@@ -347,8 +347,8 @@ async def analyze_stream(
                         "event": "error",
                         "message": (
                             "The model's output could not be parsed into a structured report. "
-                            "This usually happens when the model times out or runs out of memory. "
-                            "Please try switching to 'qwen2.5:3b' in the sidebar for fast, reliable local inference."
+                            "This usually happens when the model runs out of context or memory. "
+                            "Ensure qwen3.5:9b is fully loaded in Ollama and try again."
                         )
                     })
                     return

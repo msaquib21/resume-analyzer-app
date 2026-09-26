@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 from typing import List, Optional
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,11 +40,7 @@ def _parse_list(raw: str | list, fallback: List[str]) -> List[str]:
 
 
 _DEFAULT_MODELS = [
-    "qwen2.5:3b",      # Ultra-fast local execution (~3s) - recommended default
-    "qwen3.5:9b",      # Next-gen reasoning with large context (requires 16GB+ RAM)
-    "qwen2.5-coder:7b",# Code and technical specialist
-    "qwen2.5:7b",      # Enhanced general reasoning
-    "llama3.1:latest", # Llama 3.1 fallback
+    "qwen2.5:3b",       # Fast CPU model — 3.1B params, ~15-30s on CPU
 ]
 
 
@@ -57,16 +53,35 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # ── Deployment Environment (Local vs Cloud) ───────────────────────────
+    # Set DEPLOYMENT_ENV=cloud on Render/cloud hosts to auto-route to Groq API.
+    # Leave unset or "local" to use local Ollama.
+    deployment_env: str = Field(
+        default="local",
+        validation_alias=AliasChoices("DEPLOYMENT_ENV", "deployment_env"),
+    )
+
     # ── Dual LLM Provider (Local Ollama vs. Groq Cloud API) ───────────────
-    # Set LLM_PROVIDER=groq and GROQ_API_KEY=gsk_... for free cloud deployment on Render/Vercel
+    # Set LLM_PROVIDER=groq and GROQ_API_KEY in the hosting provider's secret manager
+    # for cloud deployment. Never commit API keys to the repository.
     llm_provider: str = "ollama"       # "ollama" or "groq"
     groq_api_key: Optional[str] = None
-    groq_model: str = "llama-3.1-8b-instant"
+    groq_model: str = "openai/gpt-oss-120b"
+
+    @model_validator(mode="after")
+    def _auto_route_cloud_provider(self) -> Settings:
+        """When DEPLOYMENT_ENV=cloud, automatically route LLM provider to Groq."""
+        if (self.deployment_env or "").lower().strip() == "cloud" and self.llm_provider == "ollama":
+            self.llm_provider = "groq"
+        return self
 
     # ── Ollama Model Selection & Targets ──────────────────────────────────
     # Swap model via environment variable OLLAMA_MODEL, or per-request via the
     # `model` form field on /analyze and /analyze/stream.
     ollama_base_url: str = "http://localhost:11434"
+    # Default model for local inference.
+    # qwen2.5:3b = fast on CPU (3.1B params, 1.9GB), good with structured prompts
+    # qwen3.5:9b = better quality but requires GPU for acceptable speed
     ollama_model: str = "qwen2.5:3b"
     # Declared as a string so bare and comma-separated values work; read the
     # parsed list via the `available_models` property below.
@@ -82,8 +97,11 @@ class Settings(BaseSettings):
     ollama_repeat_penalty: float = 1.0
 
     # ── Ollama Runtime Window ─────────────────────────────────────────────
+    # Context and prediction limits.
+    # 4096 context is enough for single-page resumes + JD + prompt.
+    # Keeping it small = faster memory allocation and inference.
     ollama_num_ctx: int = 4096
-    ollama_num_predict: int = 1200
+    ollama_num_predict: int = 1024  # ~1K output tokens is plenty for the JSON response
 
     # ── Embeddings ────────────────────────────────────────────────────────
     embeddings_model: str = "sentence-transformers/all-MiniLM-L6-v2"

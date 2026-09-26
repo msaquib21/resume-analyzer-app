@@ -150,10 +150,10 @@ class ScoreCoachOutput(BaseModel):
     """Structured output expected from the score + coaching LLM node."""
 
     score: int = Field(
-        default=0,
+        ...,
         ge=0,
-        le=10,
-        description="Integer match score from 0 (no alignment) to 10 (perfect match).",
+        le=100,
+        description="Required model-provided score from 0 (no alignment) to 100 (perfect match).",
     )
     gaps: list[str] = Field(
         default_factory=list,
@@ -215,7 +215,7 @@ class AnalysisResponse(BaseModel):
     """Typed response body returned by ``POST /analyze``."""
 
     analysis_id: str = Field(default="", description="Unique analysis ID for history tracking.")
-    score: int = Field(ge=0, le=10, description="Resume-to-JD match score (0–10).")
+    score: int = Field(ge=0, le=100, description="Resume-to-JD match score (0-100).")
     gaps: list[str] = Field(description="Identified skill/experience gaps.")
     improvements: list[str] = Field(description="Actionable resume improvements.")
     preparation: list[str] = Field(description="Interview preparation steps.")
@@ -238,7 +238,7 @@ class AnalysisHistoryItem(BaseModel):
     timestamp: str = Field(description="ISO 8601 timestamp.")
     resume_filename: str = Field(default="", description="Original resume filename.")
     jd_snippet: str = Field(default="", description="First ~200 chars of the JD.")
-    score: int = Field(default=0, ge=0, le=10, description="Match score.")
+    score: int = Field(default=0, ge=0, le=100, description="Match score.")
     elapsed_seconds: float = Field(default=0.0, description="Analysis duration.")
     gap_count: int = Field(default=0, description="Number of gaps identified.")
     keyword_match_pct: float = Field(

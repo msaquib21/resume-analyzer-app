@@ -216,6 +216,14 @@ def test_models_flexible_gap_count():
     assert perfect_score.preparation == []
 
 
+def test_evidence_score_cannot_be_zero_when_verified_matches_exist():
+    """The numeric score must be tied to deterministic keyword evidence, not LLM drift."""
+    from backend.agent import calculate_evidence_score
+
+    keywords = [{"keyword": f"skill-{i}", "found_in_resume": i < 7} for i in range(13)]
+    assert calculate_evidence_score(keywords, ["One verified requirement gap"]) == 46
+
+
 def test_build_llm_dual_provider_selection(monkeypatch):
     """LLM factory must return ChatGroq when provider is 'groq' and Ollama when 'ollama'."""
     from backend.config import settings
@@ -228,7 +236,7 @@ def test_build_llm_dual_provider_selection(monkeypatch):
     monkeypatch.setattr(settings, "groq_api_key", "gsk_test_mock_key")
     groq_llm = _build_llm()
     assert isinstance(groq_llm, ChatGroq)
-    assert groq_llm.model_name == "llama-3.1-8b-instant"
+    assert groq_llm.model_name == "openai/gpt-oss-120b"
 
     # Test Ollama provider
     monkeypatch.setattr(settings, "llm_provider", "ollama")
@@ -285,5 +293,3 @@ def test_empty_string_schema_failure_mitigation():
     assert api_resp.gaps == []
     assert api_resp.improvements == []
     assert api_resp.preparation == []
-
-

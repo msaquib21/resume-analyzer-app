@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import requests
 import streamlit as st
 import pandas as pd
 
-BACKEND_URL = "http://localhost:8000"
+# Use localhost when the UI and API run together locally or in one container.
+# A separate-cloud-service deployment can set BACKEND_URL to the public API URL.
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+GITHUB_REPOSITORY_URL = os.getenv(
+    "GITHUB_REPOSITORY_URL",
+    "https://github.com/msaquib21/resume-analyzer-app",
+)
 
 st.set_page_config(
     page_title="Agentic Resume Analyzer — AI Career Coach",
@@ -782,7 +789,7 @@ with st.sidebar:
 
     st.divider()
 
-    # System Status Indicator & Model Selector
+    # System Status Indicator — fixed to qwen2.5:3b
     try:
         health = requests.get(f"{BACKEND_URL}/health", timeout=2.5).json()
         provider = health.get("llm_provider", "ollama").lower()
@@ -795,9 +802,7 @@ with st.sidebar:
             status_text = "Ollama (Connected)" if health.get("ollama_reachable") else "Ollama Offline"
             provider_label = "Local AI (Ollama)"
 
-        models_list = health.get("available_models") or ["qwen2.5:3b", "qwen3.5:9b", "qwen2.5:7b", "qwen3:8b", "llama3.1:8b"]
-        current_model = health.get("model", "qwen2.5:3b")
-        default_idx = models_list.index(current_model) if current_model in models_list else 0
+        st.session_state.selected_model = "qwen2.5:3b"
 
         st.markdown(
             f"""
@@ -807,28 +812,34 @@ with st.sidebar:
                 <span style="color: #EDF2FF; font-size: 0.82rem; font-weight: 700;">{provider_label}: {status_text}</span>
               </div>
               <div style="color: #8899B4; font-size: 0.74rem; margin-top: 6px; font-family: var(--mono);">
-                Model: {current_model}
+                Model: qwen2.5:3b
               </div>
               <div style="color: #506282; font-size: 0.70rem; margin-top: 4px;">
                 Retrieval: Hybrid ChromaDB + BM25
+              </div>
+              <div style="margin-top: 8px; display:inline-block; padding: 2px 10px; border-radius: 20px; background: rgba(0,255,163,0.08); border: 1px solid rgba(0,255,163,0.25); color: #00FFA3; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;">
+                🧠 qwen2.5:3b · Optimized for Speed
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        if provider == "ollama":
-            selected_model = st.selectbox(
-                "🧠 Select Ollama Model",
-                options=models_list,
-                index=default_idx,
-                help="Swap LLM models easily: qwen2.5:3b, qwen3.5:9b, qwen2.5:7b, qwen3:8b, or llama3.1:8b",
-                key="ollama_model_select",
+        if provider == "groq":
+            st.markdown(
+                f"""
+                <div style="padding: 13px; border-radius: 10px; background: rgba(56,189,248,0.07); border: 1px solid rgba(56,189,248,0.25); margin-top: 8px;">
+                  <div style="color:#38BDF8; font-size:0.80rem; font-weight:800;">☁️ Public cloud demo</div>
+                  <div style="color:#A9B8D2; font-size:0.73rem; line-height:1.5; margin-top:5px;">
+                    This demo uses hosted Groq inference so recruiters can try it online. The private local Ollama architecture is available in the repository.
+                  </div>
+                  <a href="{GITHUB_REPOSITORY_URL}" target="_blank" rel="noopener noreferrer" style="display:inline-block; color:#00FFA3; font-size:0.75rem; font-weight:800; margin-top:8px; text-decoration:none;">View local architecture on GitHub ↗</a>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            st.session_state.selected_model = selected_model
-        else:
-            st.session_state.selected_model = current_model
     except Exception:
+        st.session_state.selected_model = "qwen2.5:3b"
         st.markdown(
             """
             <div style="padding: 12px; border-radius: 10px; background: rgba(255,64,96,0.05); border: 1px solid rgba(255,64,96,0.2);">
@@ -998,7 +1009,7 @@ def render_analysis_page():
                     Included Analysis Deliverables
                   </div>
                   <div class="feature-pill-grid">
-                    <span class="feature-pill">🎯 0–10 Match Score</span>
+                    <span class="feature-pill">📊 0-100 Match Score</span>
                     <span class="feature-pill">🔍 Evidence-Linked Skill Gaps</span>
                     <span class="feature-pill">⚡ Action-Oriented Resume Bullets</span>
                     <span class="feature-pill">🗺️ 3-Tier Interview Prep Roadmap</span>
@@ -1083,7 +1094,7 @@ def render_analysis_page():
                     files = {"resume_pdf": (resume_file.name, resume_bytes, "application/pdf")}
                     data = {
                         "job_description": active_jd,
-                        "model": st.session_state.get("selected_model", "qwen2.5:3b"),
+                        "model": st.session_state.get("selected_model", "qwen3.5:9b"),
                     }
 
                     with requests.post(f"{BACKEND_URL}/analyze/stream", data=data, files=files, stream=True, timeout=420) as resp:
@@ -1148,13 +1159,18 @@ def render_analysis_page():
                 keyword_total = len(keywords)
                 keyword_found = sum(1 for k in keywords if k.get("found_in_resume"))
                 kw_pct = round((keyword_found / keyword_total * 100) if keyword_total > 0 else 0)
+                score_basis = (
+                    f"{kw_pct}% verified keyword coverage"
+                    f" − {min(len(gaps) * 8, 24)} pts for {len(gaps)} verified JD gap(s)"
+                    if keyword_total else "No measurable JD keywords found"
+                )
 
                 # Color Schemes
-                if score >= 8:
+                if score >= 80:
                     ring_color, score_fg = "#00FFA3", "#00FFA3"
                     glow_bg = "rgba(0,255,163,0.12)"
                     score_title = "Strong Alignment"
-                elif score >= 5:
+                elif score >= 50:
                     ring_color, score_fg = "#FFB800", "#FFB800"
                     glow_bg = "rgba(255,184,0,0.12)"
                     score_title = "Moderate Match"
@@ -1165,7 +1181,7 @@ def render_analysis_page():
 
                 radius = 64
                 circumference = 2 * 3.14159 * radius
-                dash_offset = circumference * (1 - (score / 10))
+                dash_offset = circumference * (1 - (score / 100))
 
                 # Score Section & Gauge
                 st.markdown(
@@ -1182,11 +1198,11 @@ def render_analysis_page():
                           />
                         </svg>
                         <div class="score-center">
-                          <div class="score-value" style="color: {score_fg};">{score}<span style="font-size:1.4rem; color: #506282;">/10</span></div>
+                          <div class="score-value" style="color: {score_fg};">{score}<span style="font-size:1.4rem; color: #506282;">/100</span></div>
                           <div class="score-label">{score_title}</div>
                         </div>
                       </div>
-                      <div class="score-elapsed">Pipeline completed in {elapsed_display:.1f}s · In-Memory ChromaDB</div>
+                      <div class="score-elapsed">{score_basis} · Pipeline completed in {elapsed_display:.1f}s · In-Memory ChromaDB</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -1234,8 +1250,8 @@ def render_analysis_page():
                     if gaps:
                         st.markdown('<div class="result-scroll">', unsafe_allow_html=True)
                         for i, g in enumerate(gaps, start=1):
-                            sev_class = "severity-high" if score < 5 else ("severity-med" if score < 8 else "severity-low")
-                            badge_class = "gap-badge-high" if score < 5 else ("gap-badge-med" if score < 8 else "gap-badge-low")
+                            sev_class = "severity-high" if score < 50 else ("severity-med" if score < 80 else "severity-low")
+                            badge_class = "gap-badge-high" if score < 50 else ("gap-badge-med" if score < 80 else "gap-badge-low")
 
                             text = g.strip()
                             colon_idx = text.find(":")
@@ -1448,7 +1464,7 @@ def render_history_page():
                 st.markdown(f'<div style="font-weight:800; font-size:1.05rem; color:#FFFFFF; margin-bottom:14px;">Past Analyses ({len(history)})</div>', unsafe_allow_html=True)
                 for item in history:
                     score = item.get("score", 0)
-                    score_color = "#00FFA3" if score >= 8 else ("#FFB800" if score >= 5 else "#FF4060")
+                    score_color = "#00FFA3" if score >= 80 else ("#FFB800" if score >= 50 else "#FF4060")
                     ts = item.get("timestamp", "")[:16].replace("T", " ")
                     fname = item.get("resume_filename", "unknown.pdf")
                     jd = item.get("jd_snippet", "")[:120]
@@ -1468,7 +1484,7 @@ def render_history_page():
                                   <div class="history-meta">{ts} · {gaps} Gaps Found · {kw_pct}% Keywords · {elapsed:.1f}s</div>
                                   <div class="history-meta" style="margin-top:6px; color:#CAD5E8;">"{jd}..."</div>
                                 </div>
-                                <div class="history-score" style="color:{score_color};">{score}/10</div>
+                                <div class="history-score" style="color:{score_color};">{score}/100</div>
                               </div>
                             </div>
                             """,
