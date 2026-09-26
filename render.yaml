@@ -14,3 +14,5 @@ services:
         value: openai/gpt-oss-120b
       - key: LLM_PROVIDER
         value: groq
+      - key: BACKEND_URL
+        value: http://127.0.0.1:8001
