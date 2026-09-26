@@ -16,6 +16,17 @@ import requests
 import streamlit as st
 import pandas as pd
 
+# Sync st.secrets into os.environ so backend agent & settings pick up cloud credentials
+try:
+    if hasattr(st, "secrets"):
+        for k, v in st.secrets.items():
+            if isinstance(v, str):
+                os.environ[k] = v
+            elif isinstance(v, (int, float, bool)):
+                os.environ[k] = str(v)
+except Exception:
+    pass
+
 # Use localhost when the UI and API run together locally or in one container.
 # A separate-cloud-service deployment can set BACKEND_URL to the public API URL.
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
@@ -1170,6 +1181,9 @@ def render_analysis_page():
                             loading_placeholder.markdown(_loading_html(stage, message), unsafe_allow_html=True)
 
                         _direct_progress("extracting", "Parsing resume and extracting evidence…")
+                        if os.getenv("GROQ_API_KEY") or settings.groq_api_key:
+                            settings.llm_provider = "groq"
+                            settings.deployment_env = "cloud"
                         target_model = st.session_state.get("selected_model") or settings.ollama_model
                         payload = {
                             "job_description": active_jd,

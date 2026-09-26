@@ -132,6 +132,7 @@ Your output must be a single valid JSON object matching the requested schema.
 
 def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
     """Instantiate the configured LLM provider: local Ollama or Groq Cloud API."""
+    groq_api_key = settings.groq_api_key or os.getenv("GROQ_API_KEY")
     deployment_env = (os.getenv("DEPLOYMENT_ENV") or getattr(settings, "deployment_env", "local")).lower().strip()
     provider = getattr(settings, "llm_provider", "ollama").lower().strip()
     use_cloud = (deployment_env == "cloud") or (provider == "groq")
@@ -140,7 +141,6 @@ def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
         from langchain_groq import ChatGroq
 
         groq_model = getattr(settings, "groq_model", "openai/gpt-oss-120b")
-        groq_api_key = settings.groq_api_key or os.getenv("GROQ_API_KEY")
         if not groq_api_key:
             raise RuntimeError(
                 "GROQ_API_KEY is required when DEPLOYMENT_ENV=cloud or LLM_PROVIDER=groq. "
@@ -173,18 +173,10 @@ def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
         num_ctx=num_ctx,          # Must cover prompt + generation, or Ollama silently truncates
         num_predict=num_predict,
         keep_alive="15m",
-        # qwen3.5:9b is a "thinking" model: by default it generates a long
-        # <think>...</think> internal chain-of-thought that exhausts num_predict
-        # before writing a single JSON character. reasoning=False disables this.
-        # This is the LangChain OllamaLLM equivalent of Ollama's think=false API option.
-        reasoning=False,
     )
 
     # Sampling overrides applied opportunistically: the LangChain Ollama wrappers
-    # reject unknown fields by version, so a rejection falls back to the base
-    # configuration (which already has reasoning=False).
-    # qwen3.5's Modelfile sets presence_penalty 1.5, which pushes the model away
-    # from reusing repeated JSON keys; repeat_penalty=1.0 neutralises it.
+    # reject unknown fields by version, so a rejection falls back to the base configuration.
     tuning_kwargs = dict(
         top_k=getattr(settings, "ollama_top_k", 20),
         top_p=getattr(settings, "ollama_top_p", 0.95),
@@ -194,19 +186,19 @@ def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
     # langchain_community.llms.Ollama is deprecated; prefer langchain_ollama.
     try:
         from langchain_ollama import OllamaLLM as _OllamaCls
+        base_kwargs["reasoning"] = False
     except ImportError:
         from langchain_community.llms import Ollama as _OllamaCls
-
         logger.debug("langchain_ollama unavailable; falling back to deprecated community Ollama")
 
     try:
         return _OllamaCls(**base_kwargs, **tuning_kwargs)
     except Exception as exc:
         logger.warning(
-            "LLM wrapper rejected sampling overrides (%s); using base configuration "
-            "(reasoning=False still active).",
+            "LLM wrapper rejected sampling overrides (%s); using base configuration.",
             exc,
         )
+        base_kwargs.pop("reasoning", None)
         return _OllamaCls(**base_kwargs)
 
 
