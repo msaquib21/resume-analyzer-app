@@ -132,20 +132,23 @@ Your output must be a single valid JSON object matching the requested schema.
 
 def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
     """Instantiate the configured LLM provider: local Ollama or Groq Cloud API."""
-    groq_api_key = settings.groq_api_key or os.getenv("GROQ_API_KEY")
+    groq_api_key = getattr(settings, "groq_api_key", None) or os.getenv("GROQ_API_KEY")
+    if not groq_api_key:
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets") and "GROQ_API_KEY" in st.secrets:
+                groq_api_key = str(st.secrets["GROQ_API_KEY"])
+        except Exception:
+            pass
+
     deployment_env = (os.getenv("DEPLOYMENT_ENV") or getattr(settings, "deployment_env", "local")).lower().strip()
     provider = getattr(settings, "llm_provider", "ollama").lower().strip()
     use_cloud = (deployment_env == "cloud") or (provider == "groq")
 
-    if use_cloud:
+    if use_cloud and groq_api_key:
         from langchain_groq import ChatGroq
 
         groq_model = getattr(settings, "groq_model", "openai/gpt-oss-120b")
-        if not groq_api_key:
-            raise RuntimeError(
-                "GROQ_API_KEY is required when DEPLOYMENT_ENV=cloud or LLM_PROVIDER=groq. "
-                "Add it as a deployment secret; do not put it in source code."
-            )
         logger.info("Instantiating Groq LLM provider: model=%s", groq_model)
         return ChatGroq(
             model=groq_model,
@@ -186,7 +189,7 @@ def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
     # langchain_community.llms.Ollama is deprecated; prefer langchain_ollama.
     try:
         from langchain_ollama import OllamaLLM as _OllamaCls
-        base_kwargs["reasoning"] = False
+        tuning_kwargs["reasoning"] = False
     except ImportError:
         from langchain_community.llms import Ollama as _OllamaCls
         logger.debug("langchain_ollama unavailable; falling back to deprecated community Ollama")
@@ -198,7 +201,6 @@ def _build_llm(model: Optional[str] = None, temperature: float = 0.0):
             "LLM wrapper rejected sampling overrides (%s); using base configuration.",
             exc,
         )
-        base_kwargs.pop("reasoning", None)
         return _OllamaCls(**base_kwargs)
 
 
