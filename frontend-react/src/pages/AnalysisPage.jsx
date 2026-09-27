@@ -28,30 +28,20 @@ export function ErrorView({ message }) {
   )
 }
 
-function ScoreGauge({ score }) {
-  const radius = 60
-  const circumference = 2 * Math.PI * radius
-  const offset = circumference * (1 - score / 100)
-  const color = score >= 80 ? 'var(--accent)' : score >= 50 ? 'var(--warn)' : 'var(--danger)'
+function ScoreMeter({ score }) {
+  const color = score >= 80 ? 'var(--positive)' : score >= 50 ? 'var(--accent)' : 'var(--danger)'
+  const label = score >= 80 ? 'Strong alignment' : score >= 50 ? 'Partial alignment' : 'Limited alignment'
   return (
-    <div className="gauge">
-      <svg viewBox="0 0 160 160">
-        <circle className="gauge-bg" cx="80" cy="80" r={radius} />
-        <circle
-          cx="80" cy="80" r={radius}
-          stroke={color}
-          strokeWidth="10"
-          fill="none"
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-          strokeLinecap="round"
-          transform="rotate(-90 80 80)"
-        />
-      </svg>
-      <div className="gauge-label">
-        <span className="gauge-score" style={{ color }}>{score}</span>
-        <span className="gauge-max">/100</span>
+    <div className="meter">
+      <div className="meter-value" style={{ color }}>{score}<span>/100</span></div>
+      <div className="meter-track">
+        <div className="meter-fill" style={{ width: `${score}%`, background: color }} />
+        <div className="meter-ticks">
+          <span style={{ left: '50%' }} />
+          <span style={{ left: '80%' }} />
+        </div>
       </div>
+      <div className="meter-caption" style={{ color }}>{label}</div>
     </div>
   )
 }
@@ -117,7 +107,7 @@ function ResultsView({ result }) {
 
   return (
     <div className="results">
-      <ScoreGauge score={result.score} />
+      <ScoreMeter score={result.score} />
       <div className="stats-row">
         <Stat label="Gaps" value={result.gaps.length} />
         <Stat label="Keyword match" value={`${kwTotal ? Math.round((kwFound / kwTotal) * 100) : 0}%`} />
