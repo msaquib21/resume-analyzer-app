@@ -18,26 +18,52 @@
 
 > **Upload your resume PDF + paste a Job Description → Receive an evidence-based match score, an ATS keyword heatmap, verified technical skill gaps, concrete resume bullet rewrites, and an interview preparation roadmap — powered by local LLMs or ultra-fast Groq cloud inference.**
 
+<br/>
+
+### 🔗 [**Try the live demo →**](https://resume-analyzer-app01.streamlit.app) &nbsp;|&nbsp; [**API docs →**](https://resume-analyzer-app-w0hb.onrender.com/docs)
+
+*Both run on free-tier hosting and can take 30–60s to wake up on the first request after inactivity.*
+
 </div>
 
 ---
 
 ## 📌 Table of Contents
 
-1. [Overview & What's New in v2.0](#-overview--whats-new-in-v20)
-2. [Key Architecture & Engineering Breakthroughs](#-key-architecture--engineering-breakthroughs)
-3. [Core Application Features](#-core-application-features)
-4. [Tech Stack](#-tech-stack)
-5. [System Architecture Diagram](#-system-architecture-diagram)
-6. [Installation & Local Setup](#-installation--local-setup)
-7. [Dual-LLM Provider Modes (Ollama vs. Groq)](#-dual-llm-provider-modes-ollama-vs-groq)
-8. [Running the Application](#-running-the-application)
-9. [Docker Deployment](#-docker-deployment)
-10. [Comprehensive Configuration Reference](#-comprehensive-configuration-reference)
-11. [Testing & Quality Assurance](#-testing--quality-assurance)
-12. [API Reference](#-api-reference)
-13. [Project Directory Layout](#-project-directory-layout)
-14. [License & Acknowledgements](#-license--acknowledgements)
+1. [Live Demo](#-live-demo)
+2. [Screenshots](#-screenshots)
+3. [Overview & What's New in v2.0](#-overview--whats-new-in-v20)
+4. [Key Architecture & Engineering Breakthroughs](#-key-architecture--engineering-breakthroughs)
+5. [Core Application Features](#-core-application-features)
+6. [Tech Stack](#-tech-stack)
+7. [System Architecture Diagram](#-system-architecture-diagram)
+8. [Installation & Local Setup](#-installation--local-setup)
+9. [Dual-LLM Provider Modes (Ollama vs. Groq)](#-dual-llm-provider-modes-ollama-vs-groq)
+10. [Running the Application](#-running-the-application)
+11. [Docker Deployment](#-docker-deployment)
+12. [Comprehensive Configuration Reference](#-comprehensive-configuration-reference)
+13. [Testing & Quality Assurance](#-testing--quality-assurance)
+14. [API Reference](#-api-reference)
+15. [Project Directory Layout](#-project-directory-layout)
+16. [License & Acknowledgements](#-license--acknowledgements)
+
+---
+
+## 🚀 Live Demo
+
+| | |
+|---|---|
+| **Web app** | [resume-analyzer-app01.streamlit.app](https://resume-analyzer-app01.streamlit.app) |
+| **Backend API (Swagger)** | [resume-analyzer-app-w0hb.onrender.com/docs](https://resume-analyzer-app-w0hb.onrender.com/docs) |
+| **Source** | [github.com/msaquib21/resume-analyzer-app](https://github.com/msaquib21/resume-analyzer-app) |
+
+The hosted demo runs on Groq cloud inference so anyone can try it without installing anything. The version built for personal/local use runs entirely on-device — a local LLM via Ollama and a local vector store, with no data leaving the machine (see [Dual-LLM Provider Modes](#-dual-llm-provider-modes-ollama-vs-groq)).
+
+---
+
+## 📸 Screenshots
+
+> _Add 2–4 screenshots or a short GIF of the app in action here._ The easiest way: open this file in GitHub's web editor and drag image files straight into this section — GitHub uploads them and writes the markdown for you automatically.
 
 ---
 
